@@ -4,21 +4,13 @@ import os
 import re
 import tempfile
 from typing import Optional, Any
-from urllib.parse import quote_plus
 
 import discord
-import httpx
 import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-# Piped API configuration
-# List of Piped API instances for fallback
-PIPED_INSTANCES = [
-    'pipedapi.kavin.rocks',
-    'pipedapi.adminforge.de',
-]
-PIPED_TIMEOUT = 8  # seconds per instance attempt
+  # seconds per instance attempt
 
 # yt-dlp fallback config
 YDL_OPTIONS = {
@@ -82,96 +74,22 @@ class YouTubeHandler:
         return bool(_extract_video_id(query)) or _is_youtube_playlist_url(query)
 
     # Piped API helpers
-    @classmethod
-    async def _piped_get(cls, path: str) -> Optional[dict]:
-        """Try each Piped instance until one succeeds.  Returns parsed JSON or None."""
-        async with httpx.AsyncClient(timeout=PIPED_TIMEOUT, follow_redirects=True) as client:
-            for inst in PIPED_INSTANCES:
-                url = f'https://{inst}{path}'
-                try:
-                    r = await client.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    if r.status_code == 200:
-                        return r.json()
-                    logger.warning(f"Piped {inst} returned {r.status_code} for {path}")
-                except Exception as e:
-                    logger.warning(f"Piped {inst} failed for {path}: {e}")
-        return None
-
-    @classmethod
-    async def _piped_extract_stream(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
-        """Use Piped API to get the best audio stream URL for a video."""
-        data = await cls._piped_get(f'/streams/{video_id}')
-        if not data:
-            return None
-
-        audio_streams = data.get('audioStreams') or []
-        if not audio_streams:
-            logger.warning(f"Piped returned no audioStreams for {video_id}")
-            return None
-
-        # Pick the highest bitrate audio stream
-        best = max(audio_streams, key=lambda s: s.get('bitrate', 0))
-        stream_url = best.get('url')
-        if not stream_url:
-            return None
-
-        title = data.get('title') or 'Unknown YouTube Video'
-        is_live = data.get('livestream', False)
-        duration = data.get('duration', 0)
-        return stream_url, title, is_live, duration
-
-    @classmethod
-    async def _piped_search(cls, query: str, limit: int = 10) -> list[dict]:
-        """Search YouTube via Piped API.  Returns a list of result dicts."""
-        encoded = quote_plus(query)
-        data = await cls._piped_get(f'/search?q={encoded}&filter=videos')
-        if not data:
-            return []
-
-        items = data.get('items') or []
-        results = []
-        for item in items[:limit]:
-            if item.get('type') != 'stream':
-                continue
-            vid_url = item.get('url', '')  # e.g. "/watch?v=XYZ"
-            video_id = vid_url.split('v=')[-1] if 'v=' in vid_url else vid_url.lstrip('/')
-            results.append({
-                'id': video_id,
-                'title': item.get('title') or 'Unknown YouTube Video',
-                'song': item.get('title') or 'Unknown YouTube Video',
-                'album': item.get('uploaderName') or 'YouTube',
-                'url': f'https://www.youtube.com/watch?v={video_id}',
-                'duration': item.get('duration'),
-                'provider': 'youtube',
-            })
-        return results
 
     # Public API functions
     @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
-        # For URLs, don't use Piped search — go straight to yt-dlp
+        # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
             if YouTubeHandler.is_youtube_url(query) and not YouTubeHandler.is_playable_youtube_url(query):
                 logger.info("Rejected non-playable YouTube URL during search: %s", query)
                 return []
             return await cls._ydl_search(query, limit)
 
-        # Try Piped search first
-        try:
-            results = await cls._piped_search(query, limit)
-            if results:
-                logger.info(f"Piped search returned {len(results)} results for '{query}'")
-                return results
-        except Exception as e:
-            logger.warning(f"Piped search failed for '{query}': {e}")
-
-        # Fallback to yt-dlp
-        logger.info(f"Falling back to yt-dlp search for '{query}'")
         return await cls._ydl_search(query, limit)
 
     @classmethod
     async def _ydl_search(cls, query: str, limit: int = 10) -> list[dict]:
-        """Original yt-dlp-based search (fallback)."""
+        """yt-dlp-based search. """
         def _search():
             ydl_opts = get_ydl_opts({'playlist_items': f'1-{limit}'})
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -215,7 +133,7 @@ class YouTubeHandler:
 
     @classmethod
     def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Original yt-dlp stream extraction (fallback).  Blocking."""
+        """Original yt-dlp stream extraction. Blocking."""
         ydl_opts = get_ydl_opts({
             'format': 'bestaudio/best',
             'quiet': True,
@@ -237,28 +155,13 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Try Piped first, then fall back to yt-dlp for stream extraction."""
+        """Direct yt-dlp stream extraction."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
-        video_id = _extract_video_id(url)
-
-        # 1) Piped (fast path ~1-2s)
-        if video_id:
-            try:
-                result = await cls._piped_extract_stream(video_id)
-                if result and result[0]:
-                    logger.info(f"Piped stream extraction succeeded for {video_id}")
-                    return result
-            except Exception as e:
-                logger.warning(f"Piped stream extraction failed for {video_id}: {e}")
-
-        # 2) yt-dlp fallback (slow path ~10-12s)
-        logger.info(f"Falling back to yt-dlp for stream extraction: {url}")
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, cls._ydl_extract_stream_url, url)
 
-    @classmethod
     def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
         """Synchronous wrapper — runs Piped-first async extraction in a new loop if needed.
         
