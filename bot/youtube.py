@@ -56,10 +56,17 @@ _YT_ID_RE = re.compile(
     r'([a-zA-Z0-9_-]{11})'
 )
 
+_YT_PLAYLIST_RE = re.compile(r'(?:[?&]list=)([a-zA-Z0-9_-]+)')
+
 def _extract_video_id(url: str) -> Optional[str]:
     """Pull the 11-char video ID out of a YouTube URL."""
     m = _YT_ID_RE.search(url)
     return m.group(1) if m else None
+
+
+def _is_youtube_playlist_url(url: str) -> bool:
+    q = url.lower()
+    return "youtube.com/playlist" in q or bool(_YT_PLAYLIST_RE.search(q))
 
 
 class YouTubeHandler:
@@ -67,6 +74,12 @@ class YouTubeHandler:
     def is_youtube_url(query: str) -> bool:
         q = query.lower()
         return "youtube.com" in q or "youtu.be" in q
+
+    @staticmethod
+    def is_playable_youtube_url(query: str) -> bool:
+        if not YouTubeHandler.is_youtube_url(query):
+            return False
+        return bool(_extract_video_id(query)) or _is_youtube_playlist_url(query)
 
     # ── Piped API helpers ────────────────────────────────────────────────
     @classmethod
@@ -138,6 +151,9 @@ class YouTubeHandler:
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use Piped search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
+            if YouTubeHandler.is_youtube_url(query) and not YouTubeHandler.is_playable_youtube_url(query):
+                logger.info("Rejected non-playable YouTube URL during search: %s", query)
+                return []
             return await cls._ydl_search(query, limit)
 
         # Try Piped search first
@@ -222,6 +238,9 @@ class YouTubeHandler:
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
         """Try Piped first, then fall back to yt-dlp for stream extraction."""
+        if not YouTubeHandler.is_playable_youtube_url(url):
+            logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
+            return None
         video_id = _extract_video_id(url)
 
         # 1) Piped (fast path ~1-2s)
@@ -247,6 +266,9 @@ class YouTubeHandler:
         Falls back to pure yt-dlp if async is not available.
         """
         video_id = _extract_video_id(url)
+        if YouTubeHandler.is_youtube_url(url) and not video_id and not _is_youtube_playlist_url(url):
+            logger.info("Rejected non-playable YouTube URL during sync stream extraction: %s", url)
+            return None
         if video_id:
             try:
                 import httpx as _httpx

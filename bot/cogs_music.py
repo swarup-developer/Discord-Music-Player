@@ -826,6 +826,11 @@ class MusicCog(commands.Cog):
                     "Active provider is set to **JioSaavn**. You cannot play YouTube URLs. "
                     "Change the provider using `/provider` first."
                 )
+            if YouTubeHandler.is_youtube_url(query) and not YouTubeHandler.is_playable_youtube_url(query):
+                return await interaction.followup.send(
+                    "That YouTube link is not a playable video URL. "
+                    "Please provide a valid YouTube watch, youtu.be, short, or playlist link."
+                )
 
             # Playlist URL support
             if YouTubeHandler.is_youtube_url(query) and ("list=" in query or "playlist" in query):
