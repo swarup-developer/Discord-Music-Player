@@ -99,6 +99,42 @@ class YouTubeHandler:
 
     # Public API functions
     @classmethod
+    async def _invidious_search(cls, query: str, limit: int = 10) -> list[dict]:
+        """Search YouTube videos using Invidious API."""
+        import urllib.parse
+        encoded_query = urllib.parse.quote(query)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        for instance in INVIDIOUS_INSTANCES:
+            api_url = f"https://{instance}/api/v1/search?q={encoded_query}&type=video"
+            try:
+                def _fetch():
+                    req = urllib.request.Request(api_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        return json.loads(response.read().decode())
+                loop = asyncio.get_event_loop()
+                data = await loop.run_in_executor(None, _fetch)
+                if data:
+                    results = []
+                    for entry in data[:limit]:
+                        if not entry or not entry.get("videoId"):
+                            continue
+                        results.append({
+                            'id': entry.get('videoId'),
+                            'title': entry.get('title') or 'Unknown YouTube Video',
+                            'song': entry.get('title') or 'Unknown YouTube Video',
+                            'album': entry.get('author') or 'YouTube',
+                            'url': f"https://www.youtube.com/watch?v={entry.get('videoId')}",
+                            'duration': entry.get('lengthSeconds'),
+                            'provider': 'youtube'
+                        })
+                    if results:
+                        logger.info(f"Invidious search succeeded for '{query}' using {instance}")
+                        return results
+            except Exception as e:
+                logger.warning(f"Invidious search failed on {instance}: {e}")
+        return []
+
+    @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
@@ -106,6 +142,11 @@ class YouTubeHandler:
                 logger.info("Rejected non-playable YouTube URL during search: %s", query)
                 return []
             return await cls._ydl_search(query, limit)
+
+        # Try Invidious search first as a cookie-free fallback
+        invidious_results = await cls._invidious_search(query, limit)
+        if invidious_results:
+            return invidious_results
 
         return await cls._ydl_search(query, limit)
 
