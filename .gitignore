@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.log
+music_bot.log
+venv/
+.vscode/
+.idea/
