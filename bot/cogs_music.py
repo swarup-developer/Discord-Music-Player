@@ -873,15 +873,14 @@ class MusicCog(commands.Cog):
                 await self.refresh_controller(guild_id)
                 return
 
-            title = query
-            if YouTubeHandler.is_youtube_url(query):
-                meta = await YouTubeHandler.extract_stream_url_async(query)
-                if meta:
-                    title = meta[1]
-            elif JioSaavnHandler.is_jiosaavn_url(query):
-                pass
-            
             if session.voice_client and session.voice_client.is_connected() and (session.voice_client.is_playing() or session.voice_client.is_paused()):
+                title = query
+                if YouTubeHandler.is_youtube_url(query):
+                    meta = await YouTubeHandler.extract_stream_url_async(query)
+                    if meta:
+                        title = meta[1]
+                elif JioSaavnHandler.is_jiosaavn_url(query):
+                    pass
                 queue.append(QueueItem(query=query, title=title, requested_by=interaction.user.id))
                 return await interaction.followup.send(f"Queued: **{title}**")
             else:
