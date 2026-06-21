@@ -38,7 +38,7 @@ If you have uv installed on your computer, you can run:
 If you've never created a Discord bot before, don't worry! Here is how to set it up:
 
 ### 1. Register Your Bot:
-1.  Go to the Discord Developer Portal website (discord.com/developers/applications).
+1.  Go to the Discord Developer Portal website:<br>[Discord Developer Portal](https://discord.com/developers/applications)<br>
 2.  Click "New Application" in the top right.
 3.  Name it (for example, My Music Player) and click "Create".
 4.  In the left sidebar, click "Bot", then click "Add Bot" and confirm.
@@ -92,9 +92,9 @@ Supervisor manages the bot in the background:
 If you want to run the bot on your Windows computer:
 
 ### 1. Install prerequisites:
-*   Python 3.10 or newer (from python.org, making sure you check "Add Python to PATH" during installation).
-*   Node.js (LTS version from nodejs.org).
-*   FFmpeg (from ffmpeg.org, making sure it is added to your Windows environment variables).
+*   Python 3.10 or newer:<br>[Download Python](https://www.python.org/downloads/)<br>
+*   Node.js (LTS version):<br>[Download Node.js](https://nodejs.org/)<br>
+*   FFmpeg:<br>[Download FFmpeg](https://ffmpeg.org/download.html)<br>
 
 ### 2. Install:
 1.  Open the bot folder.
