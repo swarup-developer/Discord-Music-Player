@@ -1,159 +1,196 @@
 # Discord Music Player
 
-A high-performance, self-hosted Discord music bot featuring instant audio streaming, interactive control buttons, real-time audio filters, and built-in YouTube BotGuard bypass solutions. Designed to be easy to host and use for everyone, from beginners to advanced users.
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![Discord.py](https://img.shields.io/badge/discord.py-v2.7.1-orange.svg)](https://discordpy.readthedocs.io/en/stable/)
+[![Package Manager](https://img.shields.io/badge/managed%20with-uv-purple.svg)](https://github.com/astral-sh/uv)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A high-performance, enterprise-grade, self-hosted Discord music bot. It features instant audio streaming, interactive control panels, real-time audio filters, and automated YouTube BotGuard bypass protocols. Designed for stability, speed, and ease of deployment.
 
 ---
 
-## ⚖️ Disclaimer
-**This project is a self-hosted tool developed for educational and personal use only. We are NOT associated, authorized, endorsed, or officially connected with Google LLC (YouTube), JioSaavn, or any of their subsidiaries or affiliates. All product and company names, trademarks, and logos are the property of their respective owners. Users are responsible for complying with the terms of service of the respective platforms when deploying this bot.**
+## ⚖️ Legal Disclaimer
+**This project is an independent self-hosted utility developed solely for educational and personal use. We are NOT associated, authorized, endorsed, or officially connected with Google LLC (YouTube), JioSaavn, or any of their subsidiaries or affiliates. All product names, logos, and brands are the property of their respective owners. Users are responsible for complying with the Terms of Service of all third-party platforms when deploying this bot.**
+
+---
+
+## 🚀 Key Features
+*   **Instant Audio Playback**: Pre-resolves streams directly to bypass typical Discord voice buffering and connection delays.
+*   **PO Token Server (BotGuard Bypass)**: Built-in local Proof-of-Origin HTTP server to avoid YouTube anti-bot `403 Forbidden` rate-limits.
+*   **JS Challenge Solver**: Seamless Deno-based runtime integration to solve YouTube's signature challenges in real-time.
+*   **Modular Audio Pipeline**: Implements perceptually linear quadratic volume scaling and advanced FFmpeg Soxr audio filters.
+*   **Interactive Control Board**: Rich embeds with interactive buttons for real-time player control (play, pause, skip, filters, volume, and queue paging).
+
+---
+
+## 📦 Project Management with `uv`
+
+This project uses **`uv`** (by Astral) for package resolution and virtual environment management.
+
+### What is `uv`?
+`uv` is an extremely fast Python package installer and resolver written in Rust. It serves as a modern replacement for `pip`, `pip-tools`, and `virtualenv`, offering performance improvements that are often 10x–100x faster than traditional tools.
+
+### How it is configured in this bot:
+1.  **`pyproject.toml`**: Declares the project metadata, Python compatibility constraints, and dependencies (like `discord.py`, `yt-dlp`, and `paramiko`) in a modern standardized format.
+2.  **`uv.lock`**: A cross-platform lockfile that locks the exact versions of all direct and transitive dependencies. This guarantees deterministic, reproducible installations across development, staging, and production environments.
+
+### Developer Commands:
+If you have `uv` installed, you can set up the project locally in milliseconds:
+```bash
+# Install dependencies and sync virtual environment
+uv sync
+
+# Run the bot within the managed environment
+uv run dc.py
+
+# Add a new dependency to pyproject.toml and sync lockfile
+uv add name-of-package
+```
 
 ---
 
 ## 📖 Introduction for Beginners
 
 ### What is Discord?
-[Discord](https://discord.com) is a free voice, video, and text communication service used by tens of millions of people to talk and hang out with their communities and friends.
+[Discord](https://discord.com) is a free voice, video, and text communication platform used by communities, gamers, and developers to talk and hang out.
 
 ### What is a Discord Bot?
-A Discord Bot is a virtual assistant or app that lives inside your Discord server. It listens to commands typed by users in chat channels and performs tasks—like joining a voice channel and playing music!
+A Discord Bot is a virtual user that lives inside your server. It listens for commands and performs automated tasks, such as joining a voice channel to play music.
 
 ---
 
 ## 🛠️ Step 1: Create Your Discord Bot & Get a Token
-To host this bot, you must register it as an application on Discord and get a secret **Bot Token** (which acts like a password for your bot).
 
-### How to Create a Bot:
-1.  **Open the Developer Portal**: Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-2.  **Create a New Application**: 
-    *   Click the **New Application** button in the top right.
-    *   Give it a name (e.g., *Discord Music Player*) and click **Create**.
-3.  **Set Up the Bot**:
-    *   In the left sidebar, click on **Bot**.
-    *   Click **Add Bot** and confirm.
-4.  **Enable Gateway Intents (CRITICAL)**:
-    *   Scroll down on the **Bot** page to the **Privileged Gateway Intents** section.
-    *   Turn **ON** the following toggles:
-        *   **Presence Intent**
-        *   **Server Members Intent**
-        *   **Message Content Intent** (This allows the bot to read playback commands).
-    *   Click **Save Changes**.
-5.  **Get Your Bot Token**:
-    *   On the same **Bot** page, look for the **Token** section at the top.
-    *   Click **Reset Token** and copy the long string of letters and numbers.
-    *   *Warning: Keep this token secret! Never share it with anyone, as it controls your bot.*
+To host the bot, you must register it as an application on Discord and obtain a secret **Bot Token**.
 
-### How to Invite the Bot to Your Server:
-1.  In the left sidebar of the Developer Portal, click **OAuth2**, then select **URL Generator**.
-2.  Under **Scopes**, check the box for **bot** and **applications.commands**.
-3.  Under **Bot Permissions**, check:
+### 1. Register the Bot Application:
+1.  Navigate to the [Discord Developer Portal](https://discord.com/developers/applications).
+2.  Click the **New Application** button in the top right.
+3.  Name your application (e.g., *Discord Music Player*) and click **Create**.
+4.  In the left sidebar, click on **Bot**, then click **Add Bot** and confirm.
+
+### 2. Enable Privileged Gateway Intents (Required):
+1.  Scroll down to the **Privileged Gateway Intents** section on the **Bot** page.
+2.  Turn **ON** the following toggles:
+    *   **Presence Intent**
+    *   **Server Members Intent**
+    *   **Message Content Intent** (Crucial for reading music commands).
+3.  Click **Save Changes**.
+
+### 3. Retrieve Your Token:
+1.  In the **Token** section at the top of the **Bot** page, click **Reset Token**.
+2.  Copy and save the long token string. Keep this secret!
+
+### 4. Invite the Bot to Your Server:
+1.  In the Developer Portal sidebar, click **OAuth2**, then select **URL Generator**.
+2.  Under **Scopes**, select: `bot` and `applications.commands`.
+3.  Under **Bot Permissions**, select:
     *   **Send Messages**
     *   **Embed Links**
-    *   **Connect** (Voice permission)
-    *   **Speak** (Voice permission)
+    *   **Connect**
+    *   **Speak**
     *   **Use Voice Activity**
-4.  Copy the generated URL at the bottom of the page.
-5.  Paste this URL into your web browser, select your Discord server, and click **Authorize**.
+4.  Copy the generated URL at the bottom of the page, paste it into your browser, and authorize it for your server.
 
 ---
 
-## 🐧 Linux Setup Guide (For VPS Hosting)
+## 🐧 Linux Deployment Guide (Ubuntu/VPS)
 
-If you are hosting your bot on a remote Linux server (like an Ubuntu VPS from Oracle Cloud, AWS, or DigitalOcean):
+If you are hosting your bot on a remote Linux server (such as an Ubuntu VPS on AWS, Oracle Cloud, or DigitalOcean):
 
-### 1. Run the Installer
-Run the automated script to install Python, Node.js, Deno, Git, FFmpeg, and the background process manager (Supervisor):
+### 1. Run the Installer Script
+Execute the installer to automatically configure Node.js, Deno, Python, FFmpeg, Git, and Supervisor:
 ```bash
 git clone <your-repo-url> DiscordMusicPlayer
 cd DiscordMusicPlayer
 sudo bash setup.sh
 ```
-*Note: `setup.sh` automatically installs Node.js, Deno, Python, FFmpeg, Git, and Supervisor, sets up the virtual environment, compiles the POT server, and creates background service configs.*
 
-### 2. Configure Settings
-*   Create a file named `.env` in the bot directory:
+### 2. Configure Environment Secrets
+*   Create a `.env` file in the root directory:
     ```env
-    DISCORD_TOKEN=paste_your_discord_bot_token_here
+    DISCORD_TOKEN=your_copied_bot_token_here
     ```
-*   Follow the **YouTube Cookie Guide** below and place the `cookies.txt` file in this directory.
+*   Follow the **YouTube Cookie Guide** below and place the `cookies.txt` file in the root directory.
 
-### 3. Start the Bot
-Start the bot in the background:
+### 3. Manage Background Services
+Supervisor runs the bot and the PO Token server in the background:
 ```bash
-sudo supervisorctl reread
-sudo supervisorctl update
+# Check statuses
+sudo supervisorctl status
+
+# Restart the bot
 sudo supervisorctl restart dcbot
 ```
 
 ---
 
-## 🪟 Windows Setup Guide (For Home PC Hosting)
-
-If you want to run the bot on your own Windows computer:
+## 🪟 Windows Deployment Guide (Local Host)
 
 ### 1. Install Prerequisites
-Make sure you have these installed on your Windows machine:
-*   [Python 3.10+](https://www.python.org/downloads/) (Make sure to check "Add Python to PATH" during installation).
-*   [Node.js](https://nodejs.org/) (Download the LTS installer).
-*   [FFmpeg](https://ffmpeg.org/download.html) (Download the Windows build and add its `bin` folder to your Windows environment PATH).
+Ensure the following are installed and added to your system environment variables (PATH):
+*   [Python 3.10+](https://www.python.org/downloads/) (Check **"Add Python to PATH"**).
+*   [Node.js (LTS)](https://nodejs.org/)
+*   [FFmpeg](https://ffmpeg.org/download.html) (Ensure `ffmpeg` and `ffprobe` executable directories are in your system PATH).
 
 ### 2. Run the Installer
-1.  Open the bot folder on your PC.
-2.  Double-click **`setup_windows.bat`**. This will set up Python dependencies, automatically download and configure **Deno** (needed for YouTube challenge solving), and configure the PO Token server.
+1.  Open the bot folder.
+2.  Double-click **`setup_windows.bat`**. This sets up the virtual environment, installs dependencies, downloads Deno, and builds the POT server.
 
-### 3. Configure Settings
-*   Create a file named `.env` in the bot directory:
+### 3. Configuration
+*   Create a `.env` file in the root directory:
     ```env
-    DISCORD_TOKEN=paste_your_discord_bot_token_here
+    DISCORD_TOKEN=your_copied_bot_token_here
     ```
-*   Follow the **YouTube Cookie Guide** below and place the `cookies.txt` file in this directory.
+*   Follow the **YouTube Cookie Guide** below and place the `cookies.txt` file in the root directory.
 
-### 4. Run the Bot
-*   Double-click **`run_windows.bat`**. This starts both the helper token server and the Discord bot concurrently. Keep both windows open.
+### 4. Start the Application
+*   Double-click **`run_windows.bat`**. This launches both the POT server and the Discord bot concurrently. Keep both command prompt windows open.
 
 ---
 
-## 🍪 YouTube Cookie Guide (Bypass Bot Verification)
-YouTube blocks servers or programs that download video audio unless they pass verification or log in. To bypass this, you need to provide your login cookies.
+## 🍪 YouTube Cookie Guide (Bypass Verification Blocks)
+YouTube blocks requests from datacenter IPs unless valid login cookies are provided.
 
 1.  Open an **Incognito/Private** window in your browser.
-2.  Go to YouTube and log into a **dedicated/throwaway Google Account** (do not use your main personal account).
+2.  Log into a **dedicated/throwaway Google Account** on YouTube (do not use your main personal account).
 3.  Play any video for 5–10 seconds.
-4.  Use a browser extension (such as **"Get cookies.txt LOCALLY"** for Chrome/Firefox) to export the cookies in **Netscape format**.
-5.  Save the file as **`cookies.txt`** and put it in the bot root directory (`cookies.txt`).
-6.  **Important**: Close the incognito browser window immediately. **Do NOT click "Sign Out"** on YouTube, or your cookies will instantly become invalid.
+4.  Export the cookies in **Netscape format** using a browser extension (such as **"Get cookies.txt LOCALLY"**).
+5.  Save the file as **`cookies.txt`** and place it in the bot root directory (`cookies.txt`).
+6.  **Important**: Close the incognito window immediately. **Do NOT click "Sign Out"** on YouTube, or your cookies will instantly become invalid.
 
 ---
 
-## 🎵 JioSaavn Configuration
-JioSaavn integration works out of the box using public API queries and HTML scrapers to fetch high-quality audio streams and lyrics directly.
-*   **No credentials needed**: JioSaavn does not require API keys or login accounts.
-*   **Switching Providers**: You can switch your default search provider using the `/provider` command.
+## 🎵 JioSaavn Integration
+JioSaavn integration works out of the box using public API queries and HTML scrapers.
+*   **Zero Configuration**: JioSaavn requires no API keys or login accounts.
+*   **Switching Providers**: Switch your default search provider dynamically using the `/provider` command.
 
 ---
 
 ## 🎮 Slash Commands
-All interactions with the Discord Music Player are handled via Discord's Slash Commands:
+All interactions are handled via Discord's Slash Commands:
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `/play` | `song` (text / search query) | Play a song immediately or enqueue it (YouTube / JioSaavn search). |
-| `/url` | `url` (link) | Play a YouTube or direct audio stream URL. |
-| `/search` | `query` (text) | Search for songs on the active provider. |
-| `/provider` | None | Open the interactive button menu to switch the default music provider. |
-| `/queue` | None | Show the current music queue with pagination. |
-| `/lyrics` | `song` (optional text) | Look up lyrics for the current song or a searched song. |
-| `/volume` | `level` (integer 0-100) | Adjust the playback volume for this server. |
-| `/skip` | None | Skip the currently playing track. |
-| `/pause` | None | Pause the music playback. |
-| `/resume` | None | Resume the paused music playback. |
-| `/stop` | None | Stop the playback and clear the queue. |
-| `/join` | None | Force the bot to join your active voice channel. |
-| `/go` | None | Tell the bot to leave the voice channel. |
-| `/bassboost`| None | Toggle the bass boost audio filter. |
-| `/nightcore`| None | Toggle the nightcore audio filter (pitch up & speed up). |
-| `/diagnose` | None | Diagnose voice connection and latency issues. |
-| `/voicecheck`| None | Verify current voice connection details. |
-| `/help` | None | Show the categorized help menu. |
+| `/play` | `song` (text / search query) | Plays a song immediately or queues it (YouTube / JioSaavn search). |
+| `/url` | `url` (link) | Plays a YouTube or direct audio stream URL. |
+| `/search` | `query` (text) | Searches for songs on the active provider. |
+| `/provider` | None | Opens the interactive button menu to switch the default music provider. |
+| `/queue` | None | Shows the current music queue with pagination. |
+| `/lyrics` | `song` (optional text) | Looks up lyrics for the current song or a searched song. |
+| `/volume` | `level` (integer 0-100) | Adjusts the playback volume for this server. |
+| `/skip` | None | Skips the currently playing track. |
+| `/pause` | None | Pauses the music playback. |
+| `/resume` | None | Resumes the paused music playback. |
+| `/stop` | None | Stops the playback and clears the queue. |
+| `/join` | None | Forces the bot to join your active voice channel. |
+| `/go` | None | Tells the bot to leave the voice channel. |
+| `/bassboost`| None | Toggles the bass boost audio filter. |
+| `/nightcore`| None | Toggles the nightcore audio filter (pitch up & speed up). |
+| `/diagnose` | None | Diagnoses voice connection and latency issues. |
+| `/voicecheck`| None | Verifies current voice connection details. |
+| `/help` | None | Shows the categorized help menu. |
 
 ---
 
