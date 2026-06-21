@@ -22,3 +22,5 @@ audio/*.mp3
 # Server credentials and local settings
 server_detail.txt
 server_settings.json
+deploy.py
+deploy_*.py
