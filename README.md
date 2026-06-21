@@ -101,8 +101,8 @@ If you are hosting your bot on a remote Linux server (such as an Ubuntu VPS on A
 ### 1. Run the Installer Script
 Execute the installer to automatically configure Node.js, Deno, Python, FFmpeg, Git, and Supervisor:
 ```bash
-git clone <your-repo-url> DiscordMusicPlayer
-cd DiscordMusicPlayer
+git clone https://github.com/swarup-developer/Discord-Music-Player.git
+cd Discord-Music-Player
 sudo bash setup.sh
 ```
 
