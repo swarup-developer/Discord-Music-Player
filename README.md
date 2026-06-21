@@ -162,6 +162,36 @@ Type "/" in your Discord server to see the commands:
 
 ---
 
+## 💾 Persistent Server Settings
+
+The bot now remembers your server preferences. Any settings you configure on a server (guild) are automatically saved locally to `server_settings.json` and will persist even if the bot is restarted or leaves/rejoins a voice channel:
+*   **Volume**: Remembers your preferred music volume level.
+*   **Provider**: Remembers your chosen search provider (YouTube or JioSaavn).
+*   **Loop Mode**: Remembers if repeat/loop is active.
+*   **Audio Effects**: Remembers active filters (like bassboost or nightcore).
+
+---
+
+## 🔄 Playback Fallbacks & YouTube OAuth (2026)
+
+If YouTube changes its verification algorithms or blocks standard `yt-dlp` connections, the bot uses the following strategies to maintain playback without requiring cookies:
+
+### 1. Automatic Proxy Fallbacks (Cobalt & Invidious APIs)
+*   **How it works**: If standard `yt-dlp` fails with a `Sign in to confirm you're not a bot` or IP block error, the bot automatically cascades extraction requests through public **Cobalt** and **Invidious** API instances.
+*   **Benefit**: This proxies stream extraction away from your server's IP, bypassing local rate limits and cookie requirements seamlessly in the background.
+
+### 2. Built-in YouTube OAuth2 Device Flow (CLI Alternative)
+If you want to authenticate the downloader directly using a Google account without cookie files:
+*   **How it works**: Modern `yt-dlp` supports built-in OAuth authentication.
+*   **How to use**: You can run the following command directly on your host machine to authorize your Google account:
+    ```bash
+    # Run yt-dlp with the oauth flag to initiate authentication
+    ./.venv/bin/yt-dlp --username oauth "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    ```
+*   **Process**: It will output a verification code (e.g. `XXXX-XXXX`) and a URL (`https://www.google.com/device`). Open the link, sign in (a burner Google account is recommended), and input the code. `yt-dlp` will securely cache the tokens on your host machine, bypassing cookie files completely.
+
+---
+
 ## 🩺 Troubleshooting
 
 ### ❌ YouTube says "Sign in to confirm you're not a bot" or LOGIN_REQUIRED

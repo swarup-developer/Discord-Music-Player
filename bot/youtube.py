@@ -1,8 +1,10 @@
 import asyncio
+import json
 import logging
 import os
 import re
 import tempfile
+import urllib.request
 from typing import Optional, Any
 
 import discord
@@ -60,6 +62,25 @@ def _extract_video_id(url: str) -> Optional[str]:
 def _is_youtube_playlist_url(url: str) -> bool:
     q = url.lower()
     return "youtube.com/playlist" in q or bool(_YT_PLAYLIST_RE.search(q))
+
+
+# Invidious public instances list for fallback extraction
+INVIDIOUS_INSTANCES = [
+    "inv.thepixora.com",
+    "yt.chocolatemoo53.com",
+    "invidious.nerdvpn.de",
+    "invidious.f5.si",
+    "invidious.tiekoetter.com",
+    "inv.nadeko.net"
+]
+
+# Cobalt public instances list for fallback extraction
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools/api/json",
+    "https://cobalt.api.ryder.rip/api/json",
+    "https://co.wuk.sh/api/json",
+    "https://api.wuk.sh/api/json"
+]
 
 
 class YouTubeHandler:
@@ -133,8 +154,106 @@ class YouTubeHandler:
         return results
 
     @classmethod
+    def _extract_via_cobalt(cls, url: str) -> Optional[str]:
+        """Fetch audio stream from Cobalt instances."""
+        data = {
+            "url": url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3"
+        }
+        payload = json.dumps(data).encode('utf-8')
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Origin': 'https://cobalt.tools',
+            'Referer': 'https://cobalt.tools/'
+        }
+        for instance_url in COBALT_INSTANCES:
+            try:
+                req = urllib.request.Request(
+                    instance_url,
+                    data=payload,
+                    headers=headers,
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    res_data = json.loads(response.read().decode())
+                    if res_data.get("url"):
+                        return res_data.get("url")
+            except Exception as e:
+                logger.warning(f"Cobalt instance {instance_url} failed: {e}")
+        return None
+
+    @classmethod
+    def _extract_via_invidious(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
+        """Fetch audio stream and metadata from Invidious instances."""
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        for instance in INVIDIOUS_INSTANCES:
+            api_url = f"https://{instance}/api/v1/videos/{video_id}"
+            try:
+                req = urllib.request.Request(api_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    title = data.get("title") or "Unknown YouTube Video"
+                    is_live = data.get("liveNow", False)
+                    duration = data.get("lengthSeconds", 0)
+                    
+                    # Look for audio streams in adaptiveFormats
+                    adaptive = data.get("adaptiveFormats", [])
+                    audio_streams = [f for f in adaptive if f.get("type", "").startswith("audio/")]
+                    if audio_streams:
+                        # Sort by bitrate descending and get the best one
+                        best = max(audio_streams, key=lambda s: int(s.get("bitrate", 0) or 0))
+                        stream_url = best.get("url")
+                        if stream_url:
+                            # Handle relative proxy paths
+                            if stream_url.startswith("/"):
+                                stream_url = f"https://{instance}{stream_url}"
+                            return stream_url, title, is_live, duration
+            except Exception as e:
+                logger.warning(f"Invidious instance {instance} failed: {e}")
+        return None
+
+    @classmethod
+    def _extract_stream_url_fallback(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+        """Try Cobalt first, then Invidious, and return (stream_url, title, is_live, duration)."""
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return None
+
+        # 1. Try Invidious first for metadata + stream URL
+        logger.info(f"Attempting Invidious fallback for video: {video_id}")
+        invidious_res = cls._extract_via_invidious(video_id)
+        if invidious_res:
+            stream_url, title, is_live, duration = invidious_res
+            
+            # Since Cobalt sometimes provides better bandwidth, try Cobalt for the stream URL first.
+            logger.info("Attempting Cobalt fallback for higher bandwidth stream...")
+            cobalt_stream_url = cls._extract_via_cobalt(url)
+            if cobalt_stream_url:
+                logger.info(f"Using Cobalt stream with Invidious metadata for {video_id}")
+                return cobalt_stream_url, title, is_live, duration
+            
+            logger.info(f"Using Invidious stream and metadata for {video_id}")
+            return invidious_res
+
+        # 2. If Invidious failed completely, try Cobalt direct (with empty metadata)
+        logger.info(f"Attempting direct Cobalt extraction for video: {video_id}")
+        cobalt_stream_url = cls._extract_via_cobalt(url)
+        if cobalt_stream_url:
+            return cobalt_stream_url, "Unknown YouTube Video", False, 0
+
+        return None
+
+    @classmethod
     def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Original yt-dlp stream extraction. Blocking."""
+        """Extract stream URL using Cobalt/Invidious fallbacks, with yt-dlp as final fallback. Blocking."""
+        fallback = cls._extract_stream_url_fallback(url)
+        if fallback:
+            return fallback
+
+        logger.info("Falling back to yt-dlp for stream extraction...")
         ydl_opts = get_ydl_opts({
             'format': 'bestaudio/best',
             'quiet': True,
@@ -163,42 +282,12 @@ class YouTubeHandler:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, cls._ydl_extract_stream_url, url)
 
+    @classmethod
     def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Synchronous wrapper — runs Piped-first async extraction in a new loop if needed.
+        """Synchronous wrapper for stream extraction.
         
         Kept for backward compat with code that calls this from a thread executor.
-        Falls back to pure yt-dlp if async is not available.
         """
-        video_id = _extract_video_id(url)
-        if YouTubeHandler.is_youtube_url(url) and not video_id and not _is_youtube_playlist_url(url):
-            logger.info("Rejected non-playable YouTube URL during sync stream extraction: %s", url)
-            return None
-        if video_id:
-            try:
-                import httpx as _httpx
-                with _httpx.Client(timeout=PIPED_TIMEOUT, follow_redirects=True) as client:
-                    for inst in PIPED_INSTANCES:
-                        api_url = f'https://{inst}/streams/{video_id}'
-                        try:
-                            r = client.get(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            if r.status_code == 200:
-                                data = r.json()
-                                audio_streams = data.get('audioStreams') or []
-                                if audio_streams:
-                                    best = max(audio_streams, key=lambda s: s.get('bitrate', 0))
-                                    stream_url = best.get('url')
-                                    if stream_url:
-                                        title = data.get('title') or 'Unknown YouTube Video'
-                                        is_live = data.get('livestream', False)
-                                        duration = data.get('duration', 0)
-                                        logger.info(f"Piped (sync) stream OK for {video_id}")
-                                        return stream_url, title, is_live, duration
-                        except Exception as e:
-                            logger.warning(f"Piped (sync) {inst} failed: {e}")
-            except Exception as e:
-                logger.warning(f"Piped sync extraction error: {e}")
-
-        # yt-dlp fallback
         return cls._ydl_extract_stream_url(url)
 
     @classmethod
