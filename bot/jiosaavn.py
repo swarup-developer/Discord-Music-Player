@@ -196,7 +196,7 @@ class JioSaavnHandler:
             return None
 
     @classmethod
-    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None):
+    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             song_data = None
             if cls.is_jiosaavn_url(query):
@@ -219,16 +219,31 @@ class JioSaavnHandler:
                 return None, None
             
             ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
+            if seek and seek > 0:
+                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+            
             ffmpeg_options = "-vn"
             filters = []
+            if eq_preset:
+                if eq_preset == "bassboost":
+                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
+                elif eq_preset == "vocal":
+                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
+                elif eq_preset == "treble":
+                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
+                elif eq_preset == "lofi":
+                    filters.append("highpass=f=300,lowpass=f=4000")
+                elif eq_preset == "acoustic":
+                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+
             if effects:
-                if "bassboost" in effects:
+                if "bassboost" in effects and eq_preset != "bassboost":
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
-
+            
             source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
@@ -236,7 +251,7 @@ class JioSaavnHandler:
             return None, None
 
     @classmethod
-    async def get_audio_source_for_song(cls, song: dict, volume: float = 1.0, effects: Optional[list[str]] = None):
+    async def get_audio_source_for_song(cls, song: dict, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             song_data = dict(song)
             song_id = song_data.get("id")
@@ -249,10 +264,25 @@ class JioSaavnHandler:
                 return None, None
 
             ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
+            if seek and seek > 0:
+                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+            
             ffmpeg_options = "-vn"
             filters = []
+            if eq_preset:
+                if eq_preset == "bassboost":
+                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
+                elif eq_preset == "vocal":
+                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
+                elif eq_preset == "treble":
+                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
+                elif eq_preset == "lofi":
+                    filters.append("highpass=f=300,lowpass=f=4000")
+                elif eq_preset == "acoustic":
+                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+
             if effects:
-                if "bassboost" in effects:
+                if "bassboost" in effects and eq_preset != "bassboost":
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")

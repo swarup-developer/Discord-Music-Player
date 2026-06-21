@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 import discord
@@ -36,30 +37,32 @@ class QueueView(discord.ui.View):
         queue = self.cog.state.queue_for(self.guild_id)
         max_pages = max(1, ((len(queue) - 1) // self.per_page) + 1)
         
-        embed = discord.Embed(title="Upcoming Queue", color=discord.Color.blurple())
+        embed = discord.Embed(
+            title="🎶 Upcoming Music Queue", 
+            color=discord.Color.from_rgb(114, 137, 218)
+        )
         
         session = self.cog._session(self.guild_id)
         current_title = session.current_song_title or "Nothing playing"
-        embed.description = f"**Now Playing:** {current_title}\n\n"
+        embed.add_field(name="📻 Now Playing", value=f"**{current_title}**", inline=False)
         
+        queue_desc = []
         if not queue:
-            embed.description += "Queue is empty."
+            queue_desc.append("*The queue is empty. Add more songs using `/play`!*")
         else:
             start = self.current_page * self.per_page
             end = start + self.per_page
             page_items = list(queue)[start:end]
             
-            queue_lines = []
             for i, item in enumerate(page_items, start + 1):
-                requester_mention = f" (Requested by <@{item.requested_by}>)" if item.requested_by else ""
-                queue_lines.append(f"{i}. **{item.title}**{requester_mention}")
-            
-            embed.description += "\n".join(queue_lines)
+                requester_mention = f" — (Requested by <@{item.requested_by}>)" if item.requested_by else ""
+                queue_desc.append(f"`{i:02d}.` **{item.title}**{requester_mention}")
         
+        embed.description = "\n".join(queue_desc)
         embed.set_footer(text=f"Page {self.current_page + 1} of {max_pages} • {len(queue)} songs queued")
         return embed
 
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Previous", emoji="◀️", style=discord.ButtonStyle.secondary)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("Only the command requester can paginate.", ephemeral=True)
@@ -67,13 +70,42 @@ class QueueView(discord.ui.View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next", emoji="▶️", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.interaction.user.id:
             return await interaction.response.send_message("Only the command requester can paginate.", ephemeral=True)
         self.current_page += 1
         self._update_buttons()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+
+class EQSelect(discord.ui.Select):
+    def __init__(self, cog: "MusicCog", guild_id: int, current_preset: str):
+        self.cog = cog
+        self.guild_id = guild_id
+        options = [
+            discord.SelectOption(label="Normal (EQ Off)", value="off", emoji="🎵", description="No audio filter applied"),
+            discord.SelectOption(label="Bass Boost", value="bassboost", emoji="🔊", description="Enhanced deep bass frequencies"),
+            discord.SelectOption(label="Vocal Booster", value="vocal", emoji="🗣️", description="Boost mids for clearer vocals"),
+            discord.SelectOption(label="Treble Boost", value="treble", emoji="🎼", description="Crisp high frequencies"),
+            discord.SelectOption(label="Lo-Fi", value="lofi", emoji="📻", description="Retro radio/telephone filter"),
+            discord.SelectOption(label="Acoustic", value="acoustic", emoji="🎸", description="Warm, clear acoustic profile"),
+        ]
+        for opt in options:
+            if opt.value == current_preset:
+                opt.default = True
+        super().__init__(placeholder="Select Equalizer (EQ) Preset...", min_values=1, max_values=1, options=options, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild and self.cog.state.is_active_in_other_guild(interaction.guild.id):
+            return await interaction.response.send_message(
+                "This bot is already active in another server.", ephemeral=True
+            )
+        await interaction.response.defer(ephemeral=True)
+        preset = self.values[0]
+        self.cog.state.set_eq_preset(self.guild_id, preset)
+        await self.cog.reload_current_track(self.guild_id, interaction)
+        await self.cog.refresh_controller(self.guild_id)
 
 
 class LyricsView(discord.ui.View):
@@ -241,6 +273,10 @@ class MusicCog(commands.Cog):
                 self.play_pause.label = "Play"
                 self.play_pause.style = discord.ButtonStyle.success
 
+            # Add EQ Select Dropdown on Row 2
+            current_preset = cog.state.get_eq_preset(guild_id)
+            self.add_item(EQSelect(cog, guild_id, current_preset))
+
         def _song_label(self) -> str:
             title = self.cog._session(self.guild_id).current_song_title or "Nothing playing"
             return title
@@ -254,10 +290,16 @@ class MusicCog(commands.Cog):
             await interaction.response.defer(ephemeral=True)
             if vc.is_playing():
                 vc.pause()
+                import time
+                session.last_paused_at = time.time()
                 button.label = "Play"
                 button.style = discord.ButtonStyle.success
             elif vc.is_paused():
                 vc.resume()
+                import time
+                if getattr(session, "last_paused_at", None):
+                    session.paused_duration = getattr(session, "paused_duration", 0.0) + (time.time() - session.last_paused_at)
+                    session.last_paused_at = None
                 button.label = "Pause"
                 button.style = discord.ButtonStyle.danger
             else:
@@ -418,6 +460,7 @@ class MusicCog(commands.Cog):
         loop_mode = self.state.get_loop_mode(guild_id)
         shuffle = self.state.shuffle_enabled.get(guild_id, False)
         active_effects = self.state.get_effects(guild_id)
+        eq_preset = self.state.get_eq_preset(guild_id)
         
         loop_str = "Off"
         if loop_mode == "song":
@@ -426,6 +469,16 @@ class MusicCog(commands.Cog):
             loop_str = "Repeat Queue"
             
         effects_str = ", ".join([e.capitalize() for e in active_effects]) if active_effects else "None"
+        
+        eq_labels = {
+            "off": "Normal (Off)",
+            "bassboost": "Bass Boost",
+            "vocal": "Vocal Booster",
+            "treble": "Treble Boost",
+            "lofi": "Lo-Fi",
+            "acoustic": "Acoustic"
+        }
+        eq_str = eq_labels.get(eq_preset, "Normal (Off)")
         
         title = session.current_song_title or "Nothing playing"
         status = "Playing" if session.is_playing else "Paused" if session.voice_client and session.voice_client.is_paused() else "Idle"
@@ -437,6 +490,7 @@ class MusicCog(commands.Cog):
         embed.add_field(name="Loop", value=loop_str, inline=True)
         embed.add_field(name="Shuffle", value="On" if shuffle else "Off", inline=True)
         embed.add_field(name="Effects", value=effects_str, inline=True)
+        embed.add_field(name="EQ Preset", value=eq_str, inline=True)
         return embed
 
     async def refresh_controller(self, guild_id: int) -> None:
@@ -485,16 +539,28 @@ class MusicCog(commands.Cog):
             session.advance_queue_on_stop = False
             session.voice_client.stop()
 
-    async def _get_audio_source_and_title(self, guild_id: int, query: str, volume: float, effects: Optional[list[str]]):
+    async def _get_audio_source_and_title(self, guild_id: int, query: str, volume: float, effects: Optional[list[str]], seek: Optional[float] = None, eq_preset: Optional[str] = None):
         if JioSaavnHandler.is_jiosaavn_url(query):
-            return await JioSaavnHandler.get_audio_source(query, volume, effects=effects)
+            return await JioSaavnHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         elif YouTubeHandler.is_youtube_url(query):
-            return await YouTubeHandler.get_audio_source(query, volume, effects=effects)
+            return await YouTubeHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         elif query.startswith("http://") or query.startswith("https://"):
             ffmpeg_options = "-vn"
             filters = []
+            if eq_preset:
+                if eq_preset == "bassboost":
+                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
+                elif eq_preset == "vocal":
+                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
+                elif eq_preset == "treble":
+                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
+                elif eq_preset == "lofi":
+                    filters.append("highpass=f=300,lowpass=f=4000")
+                elif eq_preset == "acoustic":
+                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+
             if effects:
-                if "bassboost" in effects:
+                if "bassboost" in effects and eq_preset != "bassboost":
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
@@ -502,6 +568,8 @@ class MusicCog(commands.Cog):
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
             ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+            if seek and seek > 0:
+                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             try:
                 audio_source = discord.FFmpegPCMAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
                 title = query.split("/")[-1] or "Direct Stream"
@@ -513,15 +581,15 @@ class MusicCog(commands.Cog):
         else:
             provider = self.state.get_provider(guild_id)
             if provider == "youtube":
-                return await YouTubeHandler.get_audio_source(query, volume, effects=effects)
+                return await YouTubeHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
             else:
-                return await JioSaavnHandler.get_audio_source(query, volume, effects=effects)
+                return await JioSaavnHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
 
-    async def _get_audio_source_for_song(self, song: dict, volume: float, effects: Optional[list[str]]):
+    async def _get_audio_source_for_song(self, song: dict, volume: float, effects: Optional[list[str]], seek: Optional[float] = None, eq_preset: Optional[str] = None):
         if song.get("provider") == "youtube":
-            return await YouTubeHandler.get_audio_source_for_song(song, volume, effects=effects)
+            return await YouTubeHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         else:
-            return await JioSaavnHandler.get_audio_source_for_song(song, volume, effects=effects)
+            return await JioSaavnHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
 
     async def _play_startup_sound(self, guild_id: int):
         session = self._session(guild_id)
@@ -601,11 +669,15 @@ class MusicCog(commands.Cog):
 
         volume = self.state.get_volume(interaction.guild.id)
         effects = self.state.get_effects(interaction.guild.id)
-        audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects)
+        eq_preset = self.state.get_eq_preset(interaction.guild.id)
+        audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{query}**")
         audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
         session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
+        session.start_time = time.time()
+        session.paused_duration = 0.0
+        session.last_paused_at = None
         guild_id = interaction.guild.id
 
         def after_playback(error):
@@ -613,6 +685,9 @@ class MusicCog(commands.Cog):
                 logger.error(f"Playback error: {error}")
             session.is_playing = False
             session.current_song_title = None
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
             if session.temp_file_path:
                 try:
                     if os.path.exists(session.temp_file_path):
@@ -694,11 +769,15 @@ class MusicCog(commands.Cog):
 
         volume = self.state.get_volume(interaction.guild.id)
         effects = self.state.get_effects(interaction.guild.id)
-        audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects)
+        eq_preset = self.state.get_eq_preset(interaction.guild.id)
+        audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{song.get('song') or song.get('title') or 'Unknown'}**")
         audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
         session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
+        session.start_time = time.time()
+        session.paused_duration = 0.0
+        session.last_paused_at = None
         guild_id = interaction.guild.id
 
         def after_playback(error):
@@ -706,6 +785,9 @@ class MusicCog(commands.Cog):
                 logger.error(f"Playback error: {error}")
             session.is_playing = False
             session.current_song_title = None
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
             if session.temp_file_path:
                 try:
                     if os.path.exists(session.temp_file_path):
@@ -838,6 +920,15 @@ class MusicCog(commands.Cog):
         if not session.current_song_data:
             return
         
+        # Calculate elapsed playback time for seeking
+        elapsed = 0.0
+        if session.start_time > 0:
+            paused = session.paused_duration or 0.0
+            if session.last_paused_at:
+                paused += time.time() - session.last_paused_at
+            elapsed = time.time() - session.start_time - paused
+            elapsed = max(0.0, elapsed)
+
         current_data = session.current_song_data
         session.current_song_data = None
         session.advance_queue_on_stop = False
@@ -845,11 +936,48 @@ class MusicCog(commands.Cog):
             session.voice_client.stop()
             
         await asyncio.sleep(0.5)
-        
+
+        volume = self.state.get_volume(guild_id)
+        effects = self.state.get_effects(guild_id)
+        eq_preset = self.state.get_eq_preset(guild_id)
+
         if current_data["type"] == "query":
-            await self._play_audio(current_data["query"], interaction)
+            audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
         else:
-            await self._play_song_data(current_data["song"], interaction)
+            audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
+
+        if not audio_source:
+            logger.warning(f"reload_current_track: failed to get audio source for guild {guild_id}")
+            return
+
+        audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
+        session.start_time = time.time() - elapsed
+        session.paused_duration = 0.0
+        session.last_paused_at = None
+        session.current_song_data = current_data
+
+        def after_reload(error):
+            if error:
+                logger.error(f"Reload playback error: {error}")
+            session.is_playing = False
+            session.current_song_title = None
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
+            old_data = session.current_song_data
+            if old_data:
+                if not session.history or session.history[-1] != old_data:
+                    session.history.append(old_data)
+                session.current_song_data = None
+            if session.advance_queue_on_stop:
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
+            session.advance_queue_on_stop = True
+            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+        if session.voice_client and session.voice_client.is_connected():
+            session.voice_client.play(audio_source, after=after_reload)
+            session.is_playing = True
+            session.current_song_title = title
 
     async def _cleanup_if_empty(self, guild: discord.Guild) -> None:
         voice_client = guild.voice_client
@@ -868,26 +996,26 @@ class MusicCog(commands.Cog):
             return
 
         async def _delayed_disconnect():
+            disconnected = False
             try:
-                for _ in range(12):
-                    await asyncio.sleep(10)
-                    vc = guild.voice_client
-                    if not vc or not vc.is_connected() or not vc.channel:
-                        return
-                    remaining = [member for member in vc.channel.members if not member.bot]
-                    if remaining:
-                        return
+                # Wait 60 seconds then verify channel is still empty
+                await asyncio.sleep(60)
                 vc = guild.voice_client
                 if not vc or not vc.is_connected() or not vc.channel:
                     return
+                remaining = [member for member in vc.channel.members if not member.bot]
+                if remaining:
+                    # Users rejoined during the wait — cancel disconnect
+                    return
                 logger.info(f"Auto-disconnecting from empty voice channel {vc.channel.id}")
+                disconnected = True
                 await vc.disconnect(force=True)
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 logger.warning(f"Auto-disconnect failed: {e}")
             finally:
-                if self.empty_voice_tasks.get(guild_id) is task:
+                if disconnected and self.empty_voice_tasks.get(guild_id) is task:
                     self.state.clear(guild_id)
                     self.state.clear_queue(guild_id)
                 self.empty_voice_tasks.pop(guild_id, None)

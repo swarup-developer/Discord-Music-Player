@@ -29,6 +29,9 @@ class GuildSession:
     voice_assistant_source: Optional[object] = None
     current_song_data: Optional[dict] = None
     history: list[dict] = field(default_factory=list)
+    start_time: float = 0.0
+    paused_duration: float = 0.0
+    last_paused_at: Optional[float] = None
 
 
 class BotState:
@@ -41,6 +44,7 @@ class BotState:
         self.shuffle_enabled: dict[int, bool] = {}
         self.loop_modes: dict[int, str] = {}
         self.effects: dict[int, list[str]] = {}
+        self.eq_presets: dict[int, str] = {}
         self.providers: dict[int, str] = {}
         self.settings_file = "server_settings.json"
         self._load_settings()
@@ -131,6 +135,13 @@ class BotState:
         self.providers[guild_id] = provider
         self._save_settings()
 
+    def get_eq_preset(self, guild_id: int) -> str:
+        return self.eq_presets.get(guild_id, "off")
+
+    def set_eq_preset(self, guild_id: int, preset: str) -> None:
+        self.eq_presets[guild_id] = preset
+        self._save_settings()
+
     def _load_settings(self):
         if os.path.exists(self.settings_file):
             try:
@@ -147,6 +158,8 @@ class BotState:
                                 self.effects[guild_id] = list(settings["effects"])
                             if "provider" in settings:
                                 self.providers[guild_id] = str(settings["provider"])
+                            if "eq_preset" in settings:
+                                self.eq_presets[guild_id] = str(settings["eq_preset"])
                         except Exception:
                             pass
             except Exception:
@@ -155,13 +168,14 @@ class BotState:
     def _save_settings(self):
         try:
             data = {}
-            guild_ids = set(self.volume_by_guild.keys()) | set(self.loop_modes.keys()) | set(self.effects.keys()) | set(self.providers.keys())
+            guild_ids = set(self.volume_by_guild.keys()) | set(self.loop_modes.keys()) | set(self.effects.keys()) | set(self.providers.keys()) | set(self.eq_presets.keys())
             for guild_id in guild_ids:
                 data[str(guild_id)] = {
                     "volume": self.volume_by_guild.get(guild_id, 0.45),
                     "loop_mode": self.loop_modes.get(guild_id, "off"),
                     "effects": self.effects.get(guild_id, []),
-                    "provider": self.providers.get(guild_id, "youtube")
+                    "provider": self.providers.get(guild_id, "youtube"),
+                    "eq_preset": self.eq_presets.get(guild_id, "off")
                 }
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)

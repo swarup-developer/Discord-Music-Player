@@ -62,6 +62,8 @@ class ControlCog(commands.Cog):
         session = self.state.session_for(interaction.guild.id)
         if session.voice_client and session.voice_client.is_playing():
             session.voice_client.pause()
+            import time
+            session.last_paused_at = time.time()
             await interaction.response.send_message("Playback paused.")
         else:
             await interaction.response.send_message("Nothing is playing.")
@@ -78,6 +80,10 @@ class ControlCog(commands.Cog):
         session = self.state.session_for(interaction.guild.id)
         if session.voice_client and session.voice_client.is_paused():
             session.voice_client.resume()
+            import time
+            if getattr(session, "last_paused_at", None):
+                session.paused_duration = getattr(session, "paused_duration", 0.0) + (time.time() - session.last_paused_at)
+                session.last_paused_at = None
             await interaction.response.send_message("Playback resumed.")
         else:
             await interaction.response.send_message("Nothing is paused.")
@@ -96,6 +102,9 @@ class ControlCog(commands.Cog):
             session.advance_queue_on_stop = False
             session.voice_client.stop()
             self.state.clear_queue(interaction.guild.id)
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
             await interaction.response.send_message("Stopped.")
         else:
             await interaction.response.send_message("Nothing is playing.")

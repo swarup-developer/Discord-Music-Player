@@ -356,14 +356,10 @@ class YouTubeHandler:
                 return tmp_name
             except Exception as e:
                 logger.error(f"Failed to download YouTube audio: {e}")
-                try:
-                    os.remove(tmp_name)
-                except Exception:
-                    pass
-                return None
+            return None
 
     @classmethod
-    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None):
+    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             if cls.is_youtube_url(query):
                 meta = await cls.extract_stream_url_async(query)
@@ -372,10 +368,25 @@ class YouTubeHandler:
                 stream_url, title, is_live, duration = meta
                 source_path = stream_url
                 ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+                if seek and seek > 0:
+                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+                
                 ffmpeg_options = "-vn"
                 filters = []
+                if eq_preset:
+                    if eq_preset == "bassboost":
+                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
+                    elif eq_preset == "vocal":
+                        filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
+                    elif eq_preset == "treble":
+                        filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
+                    elif eq_preset == "lofi":
+                        filters.append("highpass=f=300,lowpass=f=4000")
+                    elif eq_preset == "acoustic":
+                        filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+
                 if effects:
-                    if "bassboost" in effects:
+                    if "bassboost" in effects and eq_preset != "bassboost":
                         filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                     if "nightcore" in effects:
                         filters.append("asetrate=48000*1.25")
@@ -387,13 +398,13 @@ class YouTubeHandler:
                 results = await cls.search(query, limit=1)
                 if not results:
                     return None, None
-                return await cls.get_audio_source_for_song(results[0], volume, effects)
+                return await cls.get_audio_source_for_song(results[0], volume, effects, seek, eq_preset)
         except Exception as e:
             logger.error(f"YouTube get_audio_source error: {e}")
             return None, None
 
     @classmethod
-    async def get_audio_source_for_song(cls, song: dict, volume: float = 1.0, effects: Optional[list[str]] = None):
+    async def get_audio_source_for_song(cls, song: dict, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             url = song.get("url") or song.get("id")
             if not url:
@@ -408,11 +419,25 @@ class YouTubeHandler:
             
             source_path = stream_url
             ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+            if seek and seek > 0:
+                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
             ffmpeg_options = "-vn"
             filters = []
+            if eq_preset:
+                if eq_preset == "bassboost":
+                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
+                elif eq_preset == "vocal":
+                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
+                elif eq_preset == "treble":
+                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
+                elif eq_preset == "lofi":
+                    filters.append("highpass=f=300,lowpass=f=4000")
+                elif eq_preset == "acoustic":
+                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+
             if effects:
-                if "bassboost" in effects:
+                if "bassboost" in effects and eq_preset != "bassboost":
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
