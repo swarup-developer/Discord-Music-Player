@@ -14,22 +14,22 @@ This is a personal, open-source project. I have no official association with Goo
 *   **YouTube Bypass**: Integrates a local PO Token server to help prevent YouTube from blocking your server's IP address.
 *   **Challenge Solver**: Automatically solves YouTube's signature challenges in the background using Deno.
 *   **Interactive Control Board**: Sends a clean message with play, pause, skip, filter, and volume buttons so you don't have to type commands every time.
-*   **Fast Dependencies**: Managed with `uv` for lightning-fast installation and updates.
+*   **Fast Dependencies**: Managed with uv for lightning-fast installation and updates.
 
 ---
 
-## 📦 What is `uv` and how is it used here?
+## 📦 What is uv and how is it used here?
 
-If you look at the files, you'll see a `pyproject.toml` and a `uv.lock`. This project uses **`uv`** (a super fast Python tool written in Rust) to manage packages.
+If you look at the files, you'll see a pyproject.toml and a uv.lock. This project uses uv (a super fast Python tool written in Rust) to manage packages.
 
-### Why `uv`?
-*   Instead of waiting minutes for `pip` to install dependencies, `uv` installs everything in a few milliseconds.
-*   The `uv.lock` file makes sure that everyone who hosts this bot gets the exact same package versions, preventing random crashes.
+### Why uv?
+*   Instead of waiting minutes for pip to install dependencies, uv installs everything in a few milliseconds.
+*   The uv.lock file makes sure that everyone who hosts this bot gets the exact same package versions, preventing random crashes.
 
 ### How to use it locally (optional):
-If you have `uv` installed on your computer, you can run:
-*   `uv sync` to set up your virtual environment and install packages.
-*   `uv run dc.py` to start the bot.
+If you have uv installed on your computer, you can run:
+*   "uv sync" to set up your virtual environment and install packages.
+*   "uv run dc.py" to start the bot.
 
 ---
 
@@ -38,26 +38,26 @@ If you have `uv` installed on your computer, you can run:
 If you've never created a Discord bot before, don't worry! Here is how to set it up:
 
 ### 1. Register Your Bot:
-1.  Go to the Discord Developer Portal.
-2.  Click **New Application** in the top right.
-3.  Name it (for example, *My Music Player*) and click **Create**.
-4.  In the left sidebar, click **Bot**, then click **Add Bot** and confirm.
+1.  Go to the Discord Developer Portal website (discord.com/developers/applications).
+2.  Click "New Application" in the top right.
+3.  Name it (for example, My Music Player) and click "Create".
+4.  In the left sidebar, click "Bot", then click "Add Bot" and confirm.
 
 ### 2. Enable Gateway Intents:
-Scroll down on the **Bot** page to the **Privileged Gateway Intents** section. Turn **ON** these three toggles:
-*   **Presence Intent**
-*   **Server Members Intent**
-*   **Message Content Intent** (This lets the bot read your chat commands).
-Click **Save Changes**.
+Scroll down on the Bot page to the "Privileged Gateway Intents" section. Turn ON these three toggles:
+*   Presence Intent
+*   Server Members Intent
+*   Message Content Intent (This lets the bot read your chat commands).
+Click "Save Changes".
 
 ### 3. Copy the Token:
-At the top of the **Bot** page, click **Reset Token** and copy the long code. This is your bot's password. Keep it safe and never share it.
+At the top of the Bot page, click "Reset Token" and copy the long code. This is your bot's password. Keep it safe and never share it.
 
 ### 4. Invite the Bot:
-1.  In the left sidebar, click **OAuth2**, then select **URL Generator**.
-2.  Under **Scopes**, check `bot` and `applications.commands`.
-3.  Under **Bot Permissions**, check: `Send Messages`, `Embed Links`, `Connect`, `Speak`, and `Use Voice Activity`.
-4.  Copy the URL generated at the bottom, open it in a browser, and add the bot to your server.
+1.  In the left sidebar, click "OAuth2", then select "URL Generator".
+2.  Under Scopes, check "bot" and "applications.commands".
+3.  Under Bot Permissions, check: Send Messages, Embed Links, Connect, Speak, and Use Voice Activity.
+4.  Copy the URL generated at the bottom, paste it into your browser, and add the bot to your server.
 
 ---
 
@@ -74,16 +74,16 @@ sudo bash setup.sh
 ```
 
 ### 2. Add Secrets & Cookies:
-*   Create a `.env` file in the folder and add your token:
+*   Create a .env file in the folder and add your token:
     ```env
     DISCORD_TOKEN=your_token_here
     ```
-*   Follow the **YouTube Cookie Guide** below to create a `cookies.txt` and place it in this folder.
+*   Follow the YouTube Cookie Guide below to create a cookies.txt and place it in this folder.
 
 ### 3. Run:
 Supervisor manages the bot in the background:
-*   `sudo supervisorctl status` - Check if it's running.
-*   `sudo supervisorctl restart dcbot` - Restart the bot.
+*   "sudo supervisorctl status" - Check if it's running.
+*   "sudo supervisorctl restart dcbot" - Restart the bot.
 
 ---
 
@@ -92,71 +92,71 @@ Supervisor manages the bot in the background:
 If you want to run the bot on your Windows computer:
 
 ### 1. Install prerequisites:
-*   Python 3.10+ (Make sure you check "Add Python to PATH" during installation).
-*   Node.js (LTS version).
-*   FFmpeg (Install it and make sure it is added to your Windows environment variables).
+*   Python 3.10 or newer (from python.org, making sure you check "Add Python to PATH" during installation).
+*   Node.js (LTS version from nodejs.org).
+*   FFmpeg (from ffmpeg.org, making sure it is added to your Windows environment variables).
 
 ### 2. Install:
 1.  Open the bot folder.
-2.  Double-click **`setup_windows.bat`**. This will set up the virtual environment, install packages, and set up Deno.
+2.  Double-click "setup_windows.bat". This will set up the virtual environment, install packages, and set up Deno.
 
 ### 3. Add Secrets & Cookies:
-*   Create a `.env` file in the folder and add your token:
+*   Create a .env file in the folder and add your token:
     ```env
     DISCORD_TOKEN=your_token_here
     ```
-*   Follow the **YouTube Cookie Guide** below to create a `cookies.txt` and place it in this folder.
+*   Follow the YouTube Cookie Guide below to create a cookies.txt and place it in this folder.
 
 ### 4. Run:
-*   Double-click **`run_windows.bat`** to start the bot and the token helper. Keep both windows open.
+*   Double-click "run_windows.bat" to start the bot and the token helper. Keep both windows open.
 
 ---
 
 ## 🍪 YouTube Cookie Guide (Avoid Blocks)
 YouTube blocks server IPs unless you pass browser cookies to prove you are a real person.
 
-1.  Open an **Incognito/Private** window in your browser.
-2.  Log into a **dedicated/throwaway Google Account** on YouTube (do not use your personal main account).
+1.  Open an Incognito/Private window in your browser.
+2.  Log into a dedicated/throwaway Google Account on YouTube (do not use your personal main account).
 3.  Play any video for 10 seconds.
-4.  Export the cookies in **Netscape format** using a browser extension (like "Get cookies.txt LOCALLY").
-5.  Save it as **`cookies.txt`** and put it in the bot folder.
-6.  **Important**: Close the incognito window. **Do not click "Sign Out"** on YouTube, or the cookies will expire immediately.
+4.  Export the cookies in Netscape format using a browser extension (like "Get cookies.txt LOCALLY").
+5.  Save it as "cookies.txt" and put it in the bot folder.
+6.  **Important**: Close the incognito window. Do not click "Sign Out" on YouTube, or the cookies will expire immediately.
 
 ---
 
 ## 🎵 JioSaavn Support
-JioSaavn works out of the box and doesn't require any login or API keys. You can change your default music search provider using the `/provider` command.
+JioSaavn works out of the box and doesn't require any login or API keys. You can change your default music search provider using the "/provider" command.
 
 ---
 
 ## 🎮 Slash Commands
-Type `/` in your Discord server to see the commands:
+Type "/" in your Discord server to see the commands:
 
-*   `/play [song]` - Plays a song by name or queues it.
-*   `/url [link]` - Plays a YouTube or direct audio stream link.
-*   `/search [query]` - Search for songs on YouTube or JioSaavn.
-*   `/provider` - Switches between YouTube and JioSaavn.
-*   `/queue` - Shows what songs are playing next.
-*   `/lyrics [song]` - Looks up lyrics for the current or a searched song.
-*   `/volume [0-100]` - Adjusts the music volume.
-*   `/skip` - Skips the current song.
-*   `/pause` - Pauses playback.
-*   `/resume` - Resumes playback.
-*   `/stop` - Stops playback and clears the queue.
-*   `/join` - Forces the bot to join your voice channel.
-*   `/go` - Tells the bot to leave the voice channel.
-*   `/bassboost` - Toggles the bass boost audio filter.
-*   `/nightcore` - Toggles the nightcore audio filter.
-*   `/diagnose` - Checks voice latency and connection issues.
-*   `/voicecheck` - Verifies current voice status.
-*   `/help` - Shows the help menu.
+*   /play [song] - Plays a song by name or queues it.
+*   /url [link] - Plays a YouTube or direct audio stream link.
+*   /search [query] - Search for songs on YouTube or JioSaavn.
+*   /provider - Switches between YouTube and JioSaavn.
+*   /queue - Shows what songs are playing next.
+*   /lyrics [song] - Looks up lyrics for the current or a searched song.
+*   /volume [0-100] - Adjusts the music volume.
+*   /skip - Skips the current song.
+*   /pause - Pauses playback.
+*   /resume - Resumes playback.
+*   /stop - Stops playback and clears the queue.
+*   /join - Forces the bot to join your voice channel.
+*   /go - Tells the bot to leave the voice channel.
+*   /bassboost - Toggles the bass boost audio filter.
+*   /nightcore - Toggles the nightcore audio filter.
+*   /diagnose - Checks voice latency and connection issues.
+*   /voicecheck - Verifies current voice status.
+*   /help - Shows the help menu.
 
 ---
 
 ## 🩺 Troubleshooting
 
-### ❌ YouTube says "Sign in to confirm you're not a bot" or `LOGIN_REQUIRED`
-*   Your cookies have expired. Follow the **YouTube Cookie Guide** again to export a fresh `cookies.txt` file and replace the old one.
+### ❌ YouTube says "Sign in to confirm you're not a bot" or LOGIN_REQUIRED
+*   Your cookies have expired. Follow the YouTube Cookie Guide again to export a fresh cookies.txt file and replace the old one.
 
 ### ❌ Playback control buttons are not showing up
 *   This happens if the video failed to load or play (usually due to bad cookies or voice channel connection issues). Fixing the cookies will restore the buttons on the next play.
