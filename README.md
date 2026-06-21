@@ -1,6 +1,11 @@
 # Discord Music Player
 
-A high-performance, self-hosted Discord music bot with instant audio streaming, interactive control buttons, and built-in YouTube BotGuard bypass solutions. Designed to be easy to host and use, even if you are a complete beginner.
+A high-performance, self-hosted Discord music bot featuring instant audio streaming, interactive control buttons, real-time audio filters, and built-in YouTube BotGuard bypass solutions. Designed to be easy to host and use for everyone, from beginners to advanced users.
+
+---
+
+## ⚖️ Disclaimer
+**This project is a self-hosted tool developed for educational and personal use only. We are NOT associated, authorized, endorsed, or officially connected with Google LLC (YouTube), JioSaavn, or any of their subsidiaries or affiliates. All product and company names, trademarks, and logos are the property of their respective owners. Users are responsible for complying with the terms of service of the respective platforms when deploying this bot.**
 
 ---
 
@@ -10,7 +15,7 @@ A high-performance, self-hosted Discord music bot with instant audio streaming, 
 [Discord](https://discord.com) is a free voice, video, and text communication service used by tens of millions of people to talk and hang out with their communities and friends.
 
 ### What is a Discord Bot?
-A Discord Bot is like a virtual assistant or a mini-app that lives inside your Discord server. It can listen to commands typed by users in chat channels and perform tasks—like joining a voice channel and playing music!
+A Discord Bot is a virtual assistant or app that lives inside your Discord server. It listens to commands typed by users in chat channels and performs tasks—like joining a voice channel and playing music!
 
 ---
 
@@ -21,7 +26,7 @@ To host this bot, you must register it as an application on Discord and get a se
 1.  **Open the Developer Portal**: Go to the [Discord Developer Portal](https://discord.com/developers/applications).
 2.  **Create a New Application**: 
     *   Click the **New Application** button in the top right.
-    *   Give it a name (e.g., *My Music Player*) and click **Create**.
+    *   Give it a name (e.g., *Discord Music Player*) and click **Create**.
 3.  **Set Up the Bot**:
     *   In the left sidebar, click on **Bot**.
     *   Click **Add Bot** and confirm.
@@ -53,7 +58,7 @@ To host this bot, you must register it as an application on Discord and get a se
 
 ## 🐧 Linux Setup Guide (For VPS Hosting)
 
-If you are hosting your bot on a remote Linux server (like an Ubuntu VPS from Oracle Cloud, AWS, or DigitalOcean), follow these steps:
+If you are hosting your bot on a remote Linux server (like an Ubuntu VPS from Oracle Cloud, AWS, or DigitalOcean):
 
 ### 1. Run the Installer
 Run the automated script to install Python, Node.js, Deno, Git, FFmpeg, and the background process manager (Supervisor):
@@ -62,6 +67,7 @@ git clone <your-repo-url> DiscordMusicPlayer
 cd DiscordMusicPlayer
 sudo bash setup.sh
 ```
+*Note: `setup.sh` automatically installs Node.js, Deno, Python, FFmpeg, Git, and Supervisor, sets up the virtual environment, compiles the POT server, and creates background service configs.*
 
 ### 2. Configure Settings
 *   Create a file named `.env` in the bot directory:
@@ -115,6 +121,39 @@ YouTube blocks servers or programs that download video audio unless they pass ve
 4.  Use a browser extension (such as **"Get cookies.txt LOCALLY"** for Chrome/Firefox) to export the cookies in **Netscape format**.
 5.  Save the file as **`cookies.txt`** and put it in the bot root directory (`cookies.txt`).
 6.  **Important**: Close the incognito browser window immediately. **Do NOT click "Sign Out"** on YouTube, or your cookies will instantly become invalid.
+
+---
+
+## 🎵 JioSaavn Configuration
+JioSaavn integration works out of the box using public API queries and HTML scrapers to fetch high-quality audio streams and lyrics directly.
+*   **No credentials needed**: JioSaavn does not require API keys or login accounts.
+*   **Switching Providers**: You can switch your default search provider using the `/provider` command.
+
+---
+
+## 🎮 Slash Commands
+All interactions with the Discord Music Player are handled via Discord's Slash Commands:
+
+| Command | Arguments | Description |
+| :--- | :--- | :--- |
+| `/play` | `song` (text / search query) | Play a song immediately or enqueue it (YouTube / JioSaavn search). |
+| `/url` | `url` (link) | Play a YouTube or direct audio stream URL. |
+| `/search` | `query` (text) | Search for songs on the active provider. |
+| `/provider` | None | Open the interactive button menu to switch the default music provider. |
+| `/queue` | None | Show the current music queue with pagination. |
+| `/lyrics` | `song` (optional text) | Look up lyrics for the current song or a searched song. |
+| `/volume` | `level` (integer 0-100) | Adjust the playback volume for this server. |
+| `/skip` | None | Skip the currently playing track. |
+| `/pause` | None | Pause the music playback. |
+| `/resume` | None | Resume the paused music playback. |
+| `/stop` | None | Stop the playback and clear the queue. |
+| `/join` | None | Force the bot to join your active voice channel. |
+| `/go` | None | Tell the bot to leave the voice channel. |
+| `/bassboost`| None | Toggle the bass boost audio filter. |
+| `/nightcore`| None | Toggle the nightcore audio filter (pitch up & speed up). |
+| `/diagnose` | None | Diagnose voice connection and latency issues. |
+| `/voicecheck`| None | Verify current voice connection details. |
+| `/help` | None | Show the categorized help menu. |
 
 ---
 
