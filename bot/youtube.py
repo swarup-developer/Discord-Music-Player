@@ -12,15 +12,15 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-# ── Piped API configuration ──────────────────────────────────────────────────
-# Public Piped instances for failover.  Tried in order; first success wins.
+# Piped API configuration
+# List of Piped API instances for fallback
 PIPED_INSTANCES = [
     'pipedapi.kavin.rocks',
     'pipedapi.adminforge.de',
 ]
 PIPED_TIMEOUT = 8  # seconds per instance attempt
 
-# ── yt-dlp fallback configuration ────────────────────────────────────────────
+# yt-dlp fallback config
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -42,7 +42,7 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     if os.path.exists(cookie_path):
         opts['cookiefile'] = cookie_path
     else:
-        # Fallback check relative to the file location just in case
+        # Check bot directory as fallback
         fallback_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
         if os.path.exists(fallback_path):
             opts['cookiefile'] = fallback_path
@@ -50,7 +50,7 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     return opts
 
 
-# ── Video ID extraction helper ───────────────────────────────────────────────
+# Video ID extraction
 _YT_ID_RE = re.compile(
     r'(?:youtube\.com/watch\?.*?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)'
     r'([a-zA-Z0-9_-]{11})'
@@ -81,7 +81,7 @@ class YouTubeHandler:
             return False
         return bool(_extract_video_id(query)) or _is_youtube_playlist_url(query)
 
-    # ── Piped API helpers ────────────────────────────────────────────────
+    # Piped API helpers
     @classmethod
     async def _piped_get(cls, path: str) -> Optional[dict]:
         """Try each Piped instance until one succeeds.  Returns parsed JSON or None."""
@@ -146,7 +146,7 @@ class YouTubeHandler:
             })
         return results
 
-    # ── Public API (Piped-first, yt-dlp fallback) ────────────────────────
+    # Public API functions
     @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use Piped search — go straight to yt-dlp
