@@ -15,6 +15,15 @@ This is a personal, open-source project. I have no official association with Goo
 *   **Challenge Solver**: Automatically solves YouTube's signature challenges in the background using Deno.
 *   **Interactive Control Board**: Sends a clean message with play, pause, skip, filter, and volume buttons so you don't have to type commands every time.
 *   **Fast Dependencies**: Managed with uv for lightning-fast installation and updates.
+*   **Startup Sound**: Plays a customizable audio file when the bot joins a voice channel.
+
+### 🎵 Startup Sound
+You can set up a custom sound to play immediately whenever the bot joins a voice channel:
+1. Create a folder named `audio` in the root of the project (if it doesn't already exist).
+2. Place an audio file named `audio.mp3` inside that folder.
+3. The bot will automatically play this sound upon joining a voice channel.
+
+*Note: Any `.mp3` files placed in the `audio/` directory are ignored by git to keep your private startup sound private when pushing code to a public repository.*
 
 ---
 

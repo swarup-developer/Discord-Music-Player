@@ -516,6 +516,37 @@ class MusicCog(commands.Cog):
         else:
             return await JioSaavnHandler.get_audio_source_for_song(song, volume, effects=effects)
 
+    async def _play_startup_sound(self, guild_id: int):
+        session = self._session(guild_id)
+        if not session.voice_client or not session.voice_client.is_connected():
+            return
+
+        sound_path = "audio/audio.mp3"
+        if os.path.exists(sound_path):
+            try:
+                if session.voice_client.is_playing() or session.voice_client.is_paused():
+                    return
+
+                volume = self.state.get_volume(guild_id)
+                raw_source = discord.FFmpegPCMAudio(sound_path, options="-vn")
+                audio_source = discord.PCMVolumeTransformer(raw_source, volume=volume ** 2)
+
+                session.is_playing = True
+                session.current_song_title = "Startup Sound"
+
+                def after_startup(error):
+                    if error:
+                        logger.error(f"Startup sound playback error: {error}")
+                    session.is_playing = False
+                    session.current_song_title = None
+                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id), self.bot.loop)
+                    asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+                session.voice_client.play(audio_source, after=after_startup)
+                await self.refresh_controller(guild_id)
+            except Exception as e:
+                logger.error(f"Failed to play startup sound: {e}")
+
     async def _play_audio(self, query: str, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.followup.send("This command can only be used in a server.")
@@ -1112,6 +1143,7 @@ class MusicCog(commands.Cog):
             try:
                 vc = await channel.connect(self_deaf=True, timeout=20.0, reconnect=False)
                 self.state.set_active(vc, channel.id, interaction.channel_id, guild_id)
+                self.bot.loop.create_task(self._play_startup_sound(guild_id))
                 message = f"Connected to **{channel.name}**"
                 if interaction.response.is_done():
                     return await interaction.followup.send(message, ephemeral=True)
