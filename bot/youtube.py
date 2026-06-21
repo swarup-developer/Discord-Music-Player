@@ -84,6 +84,24 @@ COBALT_INSTANCES = [
 
 
 class YouTubeHandler:
+    _working_invidious_instance = None
+    _working_cobalt_instance = None
+
+    @classmethod
+    def _get_invidious_instances(cls) -> list[str]:
+        instances = list(INVIDIOUS_INSTANCES)
+        if cls._working_invidious_instance and cls._working_invidious_instance in instances:
+            instances.remove(cls._working_invidious_instance)
+            instances.insert(0, cls._working_invidious_instance)
+        return instances
+
+    @classmethod
+    def _get_cobalt_instances(cls) -> list[str]:
+        instances = list(COBALT_INSTANCES)
+        if cls._working_cobalt_instance and cls._working_cobalt_instance in instances:
+            instances.remove(cls._working_cobalt_instance)
+            instances.insert(0, cls._working_cobalt_instance)
+        return instances
     @staticmethod
     def is_youtube_url(query: str) -> bool:
         q = query.lower()
@@ -104,7 +122,8 @@ class YouTubeHandler:
         import urllib.parse
         encoded_query = urllib.parse.quote(query)
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        for instance in INVIDIOUS_INSTANCES:
+        instances = cls._get_invidious_instances()
+        for instance in instances:
             api_url = f"https://{instance}/api/v1/search?q={encoded_query}&type=video"
             try:
                 def _fetch():
@@ -128,6 +147,7 @@ class YouTubeHandler:
                             'provider': 'youtube'
                         })
                     if results:
+                        cls._working_invidious_instance = instance
                         logger.info(f"Invidious search succeeded for '{query}' using {instance}")
                         return results
             except Exception as e:
@@ -210,7 +230,8 @@ class YouTubeHandler:
             'Origin': 'https://cobalt.tools',
             'Referer': 'https://cobalt.tools/'
         }
-        for instance_url in COBALT_INSTANCES:
+        instances = cls._get_cobalt_instances()
+        for instance_url in instances:
             try:
                 req = urllib.request.Request(
                     instance_url,
@@ -221,6 +242,7 @@ class YouTubeHandler:
                 with urllib.request.urlopen(req, timeout=5) as response:
                     res_data = json.loads(response.read().decode())
                     if res_data.get("url"):
+                        cls._working_cobalt_instance = instance_url
                         return res_data.get("url")
             except Exception as e:
                 logger.warning(f"Cobalt instance {instance_url} failed: {e}")
@@ -230,7 +252,8 @@ class YouTubeHandler:
     def _extract_via_invidious(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
         """Fetch audio stream and metadata from Invidious instances."""
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        for instance in INVIDIOUS_INSTANCES:
+        instances = cls._get_invidious_instances()
+        for instance in instances:
             api_url = f"https://{instance}/api/v1/videos/{video_id}"
             try:
                 req = urllib.request.Request(api_url, headers=headers)
@@ -242,6 +265,7 @@ class YouTubeHandler:
                     
                     # Construct a proxied stream URL to bypass YouTube IP restrictions (no 403 Forbidden)
                     stream_url = f"https://{instance}/latest_version?id={video_id}&itag=140&local=true"
+                    cls._working_invidious_instance = instance
                     return stream_url, title, is_live, duration
             except Exception as e:
                 logger.warning(f"Invidious instance {instance} failed: {e}")
@@ -249,25 +273,16 @@ class YouTubeHandler:
 
     @classmethod
     def _extract_stream_url_fallback(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Try Cobalt first, then Invidious, and return (stream_url, title, is_live, duration)."""
+        """Try Invidious first (proxied), then Cobalt (direct), and return (stream_url, title, is_live, duration)."""
         video_id = _extract_video_id(url)
         if not video_id:
             return None
 
-        # 1. Try Invidious first for metadata + stream URL
+        # 1. Try Invidious first (returns a fully proxied stream URL to bypass 403 Forbidden)
         logger.info(f"Attempting Invidious fallback for video: {video_id}")
         invidious_res = cls._extract_via_invidious(video_id)
         if invidious_res:
-            stream_url, title, is_live, duration = invidious_res
-            
-            # Since Cobalt sometimes provides better bandwidth, try Cobalt for the stream URL first.
-            logger.info("Attempting Cobalt fallback for higher bandwidth stream...")
-            cobalt_stream_url = cls._extract_via_cobalt(url)
-            if cobalt_stream_url:
-                logger.info(f"Using Cobalt stream with Invidious metadata for {video_id}")
-                return cobalt_stream_url, title, is_live, duration
-            
-            logger.info(f"Using Invidious stream and metadata for {video_id}")
+            logger.info(f"Using Invidious proxied stream and metadata for {video_id}")
             return invidious_res
 
         # 2. If Invidious failed completely, try Cobalt direct (with empty metadata)

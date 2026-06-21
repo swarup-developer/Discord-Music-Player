@@ -449,8 +449,7 @@ class MusicCog(commands.Cog):
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embed=self._controller_embed(guild_id), view=view)
-                return
+                await message.delete()
             except Exception:
                 pass
         try:
@@ -547,19 +546,43 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to play startup sound: {e}")
 
-    async def _play_audio(self, query: str, interaction: discord.Interaction):
+    async def _play_audio(self, query: str, interaction: discord.Interaction, title: Optional[str] = None):
         if not interaction.guild:
             return await interaction.followup.send("This command can only be used in a server.")
         
         # Enforce provider check for playback
         provider = self.state.get_provider(interaction.guild.id)
         if JioSaavnHandler.is_jiosaavn_url(query) and provider == "youtube":
-            await interaction.followup.send(f"Skipped: JioSaavn links are blocked when active provider is YouTube.")
-            asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
+            search_query = title
+            if not search_query or search_query == "Unknown":
+                search_query = query
+            await interaction.followup.send(f"Switched provider to YouTube. Searching for **{search_query}**...")
+            results = await YouTubeHandler.search(search_query, limit=1)
+            if results:
+                song = results[0]
+                song["provider"] = "youtube"
+                await self._play_song_data(song, interaction)
+            else:
+                await interaction.followup.send(f"No results found on YouTube for **{search_query}**. Skipping.")
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
             return
         if YouTubeHandler.is_youtube_url(query) and provider == "jiosaavn":
-            await interaction.followup.send(f"Skipped: YouTube links are blocked when active provider is JioSaavn.")
-            asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
+            search_query = title
+            if not search_query or search_query == "Unknown":
+                meta = await YouTubeHandler.extract_stream_url_async(query)
+                if meta:
+                    search_query = meta[1]
+                else:
+                    search_query = query
+            await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{search_query}**...")
+            results = await JioSaavnHandler.engine.search(search_query)
+            if results:
+                song = results[0]
+                song["provider"] = "jiosaavn"
+                await self._play_song_data(song, interaction)
+            else:
+                await interaction.followup.send(f"No results found on JioSaavn for **{search_query}**. Skipping.")
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
             return
 
         session = self._session(interaction.guild.id)
@@ -628,9 +651,32 @@ class MusicCog(commands.Cog):
         provider = self.state.get_provider(interaction.guild.id)
         if song.get("provider") != provider:
             song_name = song.get("song") or song.get("title") or "Unknown Song"
-            await interaction.followup.send(f"Skipped **{song_name}**: belongs to {song.get('provider')} (active is {provider}).")
-            asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-            return
+            if provider == "jiosaavn":
+                await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{song_name}**...")
+                results = await JioSaavnHandler.engine.search(song_name)
+                if results:
+                    new_song = results[0]
+                    new_song["provider"] = "jiosaavn"
+                    await self._play_song_data(new_song, interaction)
+                else:
+                    await interaction.followup.send(f"No results found on JioSaavn for **{song_name}**. Skipping.")
+                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
+                return
+            elif provider == "youtube":
+                await interaction.followup.send(f"Switched provider to YouTube. Searching for **{song_name}**...")
+                results = await YouTubeHandler.search(song_name, limit=1)
+                if results:
+                    new_song = results[0]
+                    new_song["provider"] = "youtube"
+                    await self._play_song_data(new_song, interaction)
+                else:
+                    await interaction.followup.send(f"No results found on YouTube for **{song_name}**. Skipping.")
+                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
+                return
+            else:
+                await interaction.followup.send(f"Skipped **{song_name}**: belongs to {song.get('provider')} (active is {provider}).")
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
+                return
 
         session = self._session(interaction.guild.id)
         if not session.voice_client or not session.voice_client.is_connected():
@@ -750,11 +796,11 @@ class MusicCog(commands.Cog):
         
         if loop_mode == "song" and last_song_data:
             if last_song_data["type"] == "query":
-                await self._play_audio(last_song_data["query"], proxy)
+                await self._play_audio(last_song_data["query"], proxy, title=last_song_data.get("title"))
             else:
                 await self._play_song_data(last_song_data["song"], proxy)
         else:
-            await self._play_audio(next_item.query, proxy)
+            await self._play_audio(next_item.query, proxy, title=next_item.title)
 
     async def play_previous(self, guild_id: int, interaction: discord.Interaction):
         session = self._session(guild_id)
@@ -775,7 +821,7 @@ class MusicCog(commands.Cog):
         session.current_song_data = None
 
         if prev_track["type"] == "query":
-            await self._play_audio(prev_track["query"], interaction)
+            await self._play_audio(prev_track["query"], interaction, title=prev_track.get("title"))
         else:
             await self._play_song_data(prev_track["song"], interaction)
 
@@ -862,17 +908,6 @@ class MusicCog(commands.Cog):
         is_url = query.startswith("http://") or query.startswith("https://")
         
         if is_url:
-            # Strict provider URL checks
-            if JioSaavnHandler.is_jiosaavn_url(query) and provider == "youtube":
-                return await interaction.followup.send(
-                    "Active provider is set to **YouTube**. You cannot play JioSaavn URLs. "
-                    "Change the provider using `/provider` first."
-                )
-            if YouTubeHandler.is_youtube_url(query) and provider == "jiosaavn":
-                return await interaction.followup.send(
-                    "Active provider is set to **JioSaavn**. You cannot play YouTube URLs. "
-                    "Change the provider using `/provider` first."
-                )
             if YouTubeHandler.is_youtube_url(query) and not YouTubeHandler.is_playable_youtube_url(query):
                 return await interaction.followup.send(
                     "That YouTube link is not a playable video URL. "
@@ -895,7 +930,7 @@ class MusicCog(commands.Cog):
                 if is_playing:
                     queue.append(QueueItem(query=first_url, title=first_title, requested_by=interaction.user.id))
                 else:
-                    await self._play_audio(first_url, interaction)
+                    await self._play_audio(first_url, interaction, title=first_title)
                 
                 for item in playlist_items[1:]:
                     queue.append(QueueItem(query=item['url'], title=item['title'], requested_by=interaction.user.id))
@@ -911,7 +946,11 @@ class MusicCog(commands.Cog):
                     if meta:
                         title = meta[1]
                 elif JioSaavnHandler.is_jiosaavn_url(query):
-                    pass
+                    token = JioSaavnHandler.extract_token_from_url(query)
+                    if token:
+                        details = await JioSaavnHandler.engine.get_song_details_by_token(token)
+                        if details:
+                            title = JioSaavnHandler.engine.format_string(details.get("song") or details.get("title") or query)
                 queue.append(QueueItem(query=query, title=title, requested_by=interaction.user.id))
                 return await interaction.followup.send(f"Queued: **{title}**")
             else:

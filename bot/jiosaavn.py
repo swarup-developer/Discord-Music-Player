@@ -80,7 +80,11 @@ class JioSaavnEngine:
                     results.extend(responses[0].json().get("results", []))
                 except Exception:
                     pass
-            unique = {song["id"]: song for song in results if song.get("id")}
+            unique = {}
+            for song in results:
+                if song.get("id"):
+                    song["provider"] = "jiosaavn"
+                    unique[song["id"]] = song
             return list(unique.values())
         except Exception as e:
             logger.error(f"Search error: {e}")
@@ -111,6 +115,23 @@ class JioSaavnEngine:
             return url.replace("_96_p.mp4", "_320.mp4" if is_320 else "_160.mp4")
         return None
 
+    async def get_song_details_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        try:
+            url = f"https://www.jiosaavn.com/api.php?__call=webapi.get&_format=json&_marker=0&cc=in&includeMetaTags=1&token={token}&type=song"
+            resp = await self.client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, dict):
+                    if data.get("status") == "failure":
+                        return None
+                    for val in data.values():
+                        if isinstance(val, dict) and "id" in val:
+                            return val
+            return None
+        except Exception as e:
+            logger.error(f"Get details by token error: {e}")
+            return None
+
 
 class JioSaavnHandler:
     engine = JioSaavnEngine()
@@ -118,6 +139,20 @@ class JioSaavnHandler:
     @staticmethod
     def is_jiosaavn_url(query: str) -> bool:
         return "jiosaavn.com" in query.lower() or "saavn" in query.lower()
+
+    @classmethod
+    def extract_token_from_url(cls, url: str) -> Optional[str]:
+        # Strip trailing slashes and split
+        parts = url.rstrip("/").split("/")
+        if len(parts) >= 2 and parts[-2] == "song":
+            return parts[-1]
+        try:
+            idx = parts.index("song")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+        except ValueError:
+            pass
+        return None
 
     @classmethod
     async def _download_stream_to_tempfile(cls, stream_url: str, max_bytes: int = 250 * 1024 * 1024) -> Optional[str]:
@@ -163,10 +198,18 @@ class JioSaavnHandler:
     @classmethod
     async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None):
         try:
-            results = await cls.engine.search(query)
-            if not results:
-                return None, None
-            song_data = results[0]
+            song_data = None
+            if cls.is_jiosaavn_url(query):
+                token = cls.extract_token_from_url(query)
+                if token:
+                    song_data = await cls.engine.get_song_details_by_token(token)
+            
+            if not song_data:
+                results = await cls.engine.search(query)
+                if not results:
+                    return None, None
+                song_data = results[0]
+                
             song_id = song_data.get("id")
             full_data = await cls.engine.get_song_details(song_id)
             if full_data:
@@ -174,10 +217,8 @@ class JioSaavnHandler:
             media_url = await cls.engine.get_media_url(song_data)
             if not media_url:
                 return None, None
-            tmpfile = await cls._download_stream_to_tempfile(media_url)
-            if not tmpfile:
-                return None, None
             
+            ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
             ffmpeg_options = "-vn"
             filters = []
             if effects:
@@ -188,8 +229,7 @@ class JioSaavnHandler:
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(tmpfile, before_options="-nostdin", options=ffmpeg_options)
-            setattr(source, "temp_file_path", tmpfile)
+            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
@@ -207,10 +247,8 @@ class JioSaavnHandler:
             media_url = await cls.engine.get_media_url(song_data)
             if not media_url:
                 return None, None
-            tmpfile = await cls._download_stream_to_tempfile(media_url)
-            if not tmpfile:
-                return None, None
 
+            ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
             ffmpeg_options = "-vn"
             filters = []
             if effects:
@@ -221,8 +259,7 @@ class JioSaavnHandler:
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(tmpfile, before_options="-nostdin", options=ffmpeg_options)
-            setattr(source, "temp_file_path", tmpfile)
+            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
