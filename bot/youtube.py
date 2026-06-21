@@ -240,18 +240,9 @@ class YouTubeHandler:
                     is_live = data.get("liveNow", False)
                     duration = data.get("lengthSeconds", 0)
                     
-                    # Look for audio streams in adaptiveFormats
-                    adaptive = data.get("adaptiveFormats", [])
-                    audio_streams = [f for f in adaptive if f.get("type", "").startswith("audio/")]
-                    if audio_streams:
-                        # Sort by bitrate descending and get the best one
-                        best = max(audio_streams, key=lambda s: int(s.get("bitrate", 0) or 0))
-                        stream_url = best.get("url")
-                        if stream_url:
-                            # Handle relative proxy paths
-                            if stream_url.startswith("/"):
-                                stream_url = f"https://{instance}{stream_url}"
-                            return stream_url, title, is_live, duration
+                    # Construct a proxied stream URL to bypass YouTube IP restrictions (no 403 Forbidden)
+                    stream_url = f"https://{instance}/latest_version?id={video_id}&itag=140&local=true"
+                    return stream_url, title, is_live, duration
             except Exception as e:
                 logger.warning(f"Invidious instance {instance} failed: {e}")
         return None
