@@ -1,7 +1,9 @@
 import logging
+import gc
+import ctypes
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from .config import BOT_SYNC_GUILD_ID, INWORLD_API_KEY, INWORLD_STT_MODEL_ID, INWORLD_TTS_VOICE_ID
 from .cogs_control import ControlCog
@@ -28,6 +30,9 @@ class Bot(commands.Bot):
         await self.add_cog(ControlCog(self))
         await self.add_cog(MusicCog(self))
 
+        # Start periodic memory optimization task
+        self._periodic_gc.start()
+
         if BOT_SYNC_GUILD_ID:
             guild = discord.Object(id=int(BOT_SYNC_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
@@ -49,6 +54,17 @@ class Bot(commands.Bot):
                 await interaction.followup.send(message, ephemeral=True)
             else:
                 await interaction.response.send_message(message, ephemeral=True)
+        except Exception:
+            pass
+
+    @tasks.loop(minutes=10)
+    async def _periodic_gc(self):
+        """Periodically run Python's GC and force release memory to Linux OS."""
+        gc.collect()
+        try:
+            # Force release unmapped memory pages on Linux glibc
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
         except Exception:
             pass
 

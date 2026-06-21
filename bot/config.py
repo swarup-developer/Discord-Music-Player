@@ -22,6 +22,6 @@ logging.basicConfig(
 )
 
 # Enable verbose logging to debug voice issues.
-logging.getLogger("discord").setLevel(logging.DEBUG)
-logging.getLogger("discord.voice_state").setLevel(logging.DEBUG)
-logging.getLogger("discord.gateway").setLevel(logging.DEBUG)
+logging.getLogger("discord").setLevel(logging.WARNING)
+logging.getLogger("discord.voice_state").setLevel(logging.WARNING)
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)

@@ -21,6 +21,7 @@ YDL_OPTIONS = {
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',  # Bind to IPv4 to prevent IPv6 timeout issues
     'remote_components': ['ejs:github'],
+    'nocache': True,
 }
 
 

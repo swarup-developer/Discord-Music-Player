@@ -152,7 +152,6 @@ class MusicCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state: BotState = bot.music_state
-        self.search_results_cache = {}
         self.voice_lock = asyncio.Lock()
         self.empty_voice_tasks: dict[int, asyncio.Task] = {}
         self.voice_join_cooldowns: dict[int, float] = {}
@@ -198,6 +197,14 @@ class MusicCog(commands.Cog):
 
             for index, song in enumerate(self.results, 1):
                 self.add_item(cog.SearchResultButton(cog, song, str(index)))
+
+        async def on_timeout(self) -> None:
+            for item in self.children:
+                item.disabled = True
+            try:
+                await self.interaction.edit_original_response(view=self)
+            except Exception:
+                pass
 
     class MusicControllerView(discord.ui.View):
         def __init__(self, cog: "MusicCog", guild_id: int):
@@ -556,12 +563,24 @@ class MusicCog(commands.Cog):
             if old_data:
                 if not session.history or session.history[-1] != old_data:
                     session.history.append(old_data)
+                    if len(session.history) > 20:
+                        session.history.pop(0)
                 session.current_song_data = None
 
             if session.advance_queue_on_stop:
                 asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
             session.advance_queue_on_stop = True
             asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+            # Instant memory reclamation
+            import gc
+            import ctypes
+            gc.collect()
+            try:
+                libc = ctypes.CDLL("libc.so.6")
+                libc.malloc_trim(0)
+            except Exception:
+                pass
 
         session.voice_client.play(audio_source, after=after_playback)
         session.is_playing = True
@@ -614,12 +633,24 @@ class MusicCog(commands.Cog):
             if old_data:
                 if not session.history or session.history[-1] != old_data:
                     session.history.append(old_data)
+                    if len(session.history) > 20:
+                        session.history.pop(0)
                 session.current_song_data = None
 
             if session.advance_queue_on_stop:
                 asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
             session.advance_queue_on_stop = True
             asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+            # Instant memory reclamation
+            import gc
+            import ctypes
+            gc.collect()
+            try:
+                libc = ctypes.CDLL("libc.so.6")
+                libc.malloc_trim(0)
+            except Exception:
+                pass
 
         session.voice_client.play(audio_source, after=after_playback)
         session.is_playing = True
@@ -779,21 +810,6 @@ class MusicCog(commands.Cog):
         task = asyncio.create_task(_delayed_disconnect())
         self.empty_voice_tasks[guild_id] = task
 
-    async def _play_search_result(self, interaction: discord.Interaction, number: int):
-        if interaction.user.id not in self.search_results_cache:
-            if interaction.response.is_done():
-                return await interaction.followup.send("Perform a /search first!")
-            return await interaction.response.send_message("Perform a /search first!")
-        results = self.search_results_cache[interaction.user.id]
-        if not (1 <= number <= len(results)):
-            message = f"Please pick a number between 1 and {len(results)}"
-            if interaction.response.is_done():
-                return await interaction.followup.send(message)
-            return await interaction.response.send_message(message)
-        await self._ensure_deferred(interaction)
-        await self._play_song_data(results[number - 1], interaction)
-        del self.search_results_cache[interaction.user.id]
-
     def _build_results_embed(self, query: str, results: list[dict]) -> discord.Embed:
         embed = discord.Embed(title=f"Search Results: {query}", color=discord.Color.blue())
         embed.description = "\n".join(
@@ -936,7 +952,6 @@ class MusicCog(commands.Cog):
         if not results:
             return await interaction.followup.send(f"No results found for '{query}' on {provider.capitalize()}")
             
-        self.search_results_cache[interaction.user.id] = results[:10]
         await interaction.followup.send(
             embed=self._build_results_embed(query, results),
             view=self.SearchResultsView(self, interaction, results),
