@@ -238,8 +238,8 @@ class MusicCog(commands.Cog):
                 self.play_pause.label = "Pause"
                 self.play_pause.style = discord.ButtonStyle.danger
             else:
-                self.play_pause.label = "Pause"
-                self.play_pause.style = discord.ButtonStyle.primary
+                self.play_pause.label = "Play"
+                self.play_pause.style = discord.ButtonStyle.success
 
         def _song_label(self) -> str:
             title = self.cog._session(self.guild_id).current_song_title or "Nothing playing"
@@ -260,6 +260,14 @@ class MusicCog(commands.Cog):
                 vc.resume()
                 button.label = "Pause"
                 button.style = discord.ButtonStyle.danger
+            else:
+                # Stopped/idle. Try to play next in queue if available
+                queue = self.cog.state.queue_for(self.guild_id)
+                if queue:
+                    await self.cog._play_next_in_queue(self.guild_id)
+                else:
+                    await interaction.followup.send("Queue is empty. Use `/play` to play a song.", ephemeral=True)
+                    return
             await self.cog.refresh_controller(interaction.guild.id if interaction.guild else self.guild_id)
 
         @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, row=0)
