@@ -13,6 +13,8 @@ from discord.ext import commands
 from .jiosaavn import JioSaavnHandler
 from .youtube import YouTubeHandler
 from .state import BotState, QueueItem
+from .audio_source import JitterBuffer
+from .search import search_songs
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +453,8 @@ class MusicCog(commands.Cog):
             source.volume = volume ** 2
             logger.info(f"sync_voice_volume: updated PCMVolumeTransformer volume to {source.volume}")
         else:
-            logger.warning(f"sync_voice_volume: source is not a PCMVolumeTransformer: {type(source)}")
+            logger.info("sync_voice_volume: reloading current track with new volume filter")
+            asyncio.run_coroutine_threadsafe(self.reload_current_track(guild_id, None), self.bot.loop)
 
     def _controller_embed(self, guild_id: int) -> discord.Embed:
         session = self._session(guild_id)
@@ -564,6 +567,7 @@ class MusicCog(commands.Cog):
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
+            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
@@ -571,7 +575,7 @@ class MusicCog(commands.Cog):
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             try:
-                audio_source = discord.FFmpegPCMAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                audio_source = discord.FFmpegOpusAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
                 title = query.split("/")[-1] or "Direct Stream"
                 title = title.split("?")[0]
                 return audio_source, title
@@ -633,7 +637,7 @@ class MusicCog(commands.Cog):
             if not search_query or search_query == "Unknown":
                 search_query = query
             await interaction.followup.send(f"Switched provider to YouTube. Searching for **{search_query}**...")
-            results = await YouTubeHandler.search(search_query, limit=1)
+            results = await search_songs(search_query, "youtube", limit=1)
             if results:
                 song = results[0]
                 song["provider"] = "youtube"
@@ -651,7 +655,7 @@ class MusicCog(commands.Cog):
                 else:
                     search_query = query
             await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{search_query}**...")
-            results = await JioSaavnHandler.engine.search(search_query)
+            results = await search_songs(search_query, "jiosaavn", limit=1)
             if results:
                 song = results[0]
                 song["provider"] = "jiosaavn"
@@ -673,7 +677,7 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{query}**")
-        audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
+        audio_source = JitterBuffer(audio_source)
         session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
         session.start_time = time.time()
         session.paused_duration = 0.0
@@ -736,7 +740,7 @@ class MusicCog(commands.Cog):
             song_name = song.get("song") or song.get("title") or "Unknown Song"
             if provider == "jiosaavn":
                 await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{song_name}**...")
-                results = await JioSaavnHandler.engine.search(song_name)
+                results = await search_songs(song_name, "jiosaavn", limit=1)
                 if results:
                     new_song = results[0]
                     new_song["provider"] = "jiosaavn"
@@ -747,7 +751,7 @@ class MusicCog(commands.Cog):
                 return
             elif provider == "youtube":
                 await interaction.followup.send(f"Switched provider to YouTube. Searching for **{song_name}**...")
-                results = await YouTubeHandler.search(song_name, limit=1)
+                results = await search_songs(song_name, "youtube", limit=1)
                 if results:
                     new_song = results[0]
                     new_song["provider"] = "youtube"
@@ -773,7 +777,7 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{song.get('song') or song.get('title') or 'Unknown'}**")
-        audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
+        audio_source = JitterBuffer(audio_source)
         session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
         session.start_time = time.time()
         session.paused_duration = 0.0
@@ -950,7 +954,7 @@ class MusicCog(commands.Cog):
             logger.warning(f"reload_current_track: failed to get audio source for guild {guild_id}")
             return
 
-        audio_source = discord.PCMVolumeTransformer(audio_source, volume=volume ** 2)
+        audio_source = JitterBuffer(audio_source)
         session.start_time = time.time() - elapsed
         session.paused_duration = 0.0
         session.last_paused_at = None
@@ -1093,12 +1097,12 @@ class MusicCog(commands.Cog):
                 await self._play_audio(query, interaction)
         else:
             if provider == "youtube":
-                results = await YouTubeHandler.search(query, limit=1)
+                results = await search_songs(query, "youtube", limit=1)
                 if not results:
                     return await interaction.followup.send(f"No results found on YouTube for '{query}'")
                 song = results[0]
             else:
-                results = await JioSaavnHandler.engine.search(query)
+                results = await search_songs(query, "jiosaavn", limit=1)
                 if not results:
                     return await interaction.followup.send(f"No results found on JioSaavn for '{query}'")
                 song = results[0]
@@ -1150,9 +1154,9 @@ class MusicCog(commands.Cog):
         
         provider = self.state.get_provider(interaction.guild.id)
         if provider == "youtube":
-            results = await YouTubeHandler.search(query, limit=10)
+            results = await search_songs(query, "youtube", limit=10)
         else:
-            results = await JioSaavnHandler.engine.search(query)
+            results = await search_songs(query, "jiosaavn", limit=10)
             
         if not results:
             return await interaction.followup.send(f"No results found for '{query}' on {provider.capitalize()}")

@@ -11,6 +11,8 @@ BOT_SYNC_GUILD_ID = os.getenv("BOT_SYNC_GUILD_ID")
 INWORLD_API_KEY = os.getenv("INWORLD_API_KEY")
 INWORLD_TTS_VOICE_ID = os.getenv("INWORLD_TTS_VOICE_ID", "")
 INWORLD_STT_MODEL_ID = os.getenv("INWORLD_STT_MODEL_ID", "assemblyai/universal-streaming-multilingual")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "AIzaSyD1c1Z_11-p5C4LdGPAYDyNreSJkfK6apE")
+
 
 logging.basicConfig(
     level=logging.INFO,

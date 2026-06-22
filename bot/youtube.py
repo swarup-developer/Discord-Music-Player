@@ -155,6 +155,51 @@ class YouTubeHandler:
         return []
 
     @classmethod
+    async def _youtube_api_search(cls, query: str, limit: int = 10) -> list[dict]:
+        """Search YouTube using the official Data API v3."""
+        from .config import YOUTUBE_API_KEY
+        if not YOUTUBE_API_KEY:
+            return []
+        
+        import httpx
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "maxResults": limit,
+            "key": YOUTUBE_API_KEY
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    data = response.json()
+                    results = []
+                    for item in data.get("items", []):
+                        video_id = item.get("id", {}).get("videoId")
+                        snippet = item.get("snippet", {})
+                        if not video_id:
+                            continue
+                        title = snippet.get("title", "Unknown YouTube Video")
+                        channel_title = snippet.get("channelTitle", "YouTube")
+                        results.append({
+                            'id': video_id,
+                            'title': title,
+                            'song': title,
+                            'album': channel_title,
+                            'url': f"https://www.youtube.com/watch?v={video_id}",
+                            'duration': None,
+                            'provider': 'youtube'
+                        })
+                    return results
+                else:
+                    logger.warning(f"YouTube V3 API search returned status {response.status_code}: {response.text}")
+        except Exception as e:
+            logger.error(f"YouTube V3 API search error: {e}")
+        return []
+
+    @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
@@ -162,6 +207,11 @@ class YouTubeHandler:
                 logger.info("Rejected non-playable YouTube URL during search: %s", query)
                 return []
             return await cls._ydl_search(query, limit)
+
+        # Try official YouTube API search first
+        api_results = await cls._youtube_api_search(query, limit)
+        if api_results:
+            return api_results
 
         # Try Invidious search first as a cookie-free fallback
         invidious_results = await cls._invidious_search(query, limit)
@@ -390,9 +440,10 @@ class YouTubeHandler:
                         filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                     if "nightcore" in effects:
                         filters.append("asetrate=48000*1.25")
+                filters.append(f"volume={volume ** 2}")
                 filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
                 ffmpeg_options += f' -af "{",".join(filters)}"'
-                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                source = discord.FFmpegOpusAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
                 return source, title
             else:
                 results = await cls.search(query, limit=1)
@@ -443,10 +494,11 @@ class YouTubeHandler:
                     filters.append("asetrate=48000*1.25")
             
             # Use high-quality soxr resampling to convert back to 48kHz PCM
+            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegOpusAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, title
         except Exception as e:
             logger.error(f"YouTube get_audio_source_for_song error: {e}")

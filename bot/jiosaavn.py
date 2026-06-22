@@ -241,10 +241,11 @@ class JioSaavnHandler:
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
+            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
-            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegOpusAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
@@ -286,10 +287,11 @@ class JioSaavnHandler:
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
+            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegOpusAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
