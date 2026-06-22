@@ -440,10 +440,9 @@ class YouTubeHandler:
                         filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                     if "nightcore" in effects:
                         filters.append("asetrate=48000*1.25")
-                filters.append(f"volume={volume ** 2}")
                 filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
                 ffmpeg_options += f' -af "{",".join(filters)}"'
-                source = discord.FFmpegOpusAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
                 return source, title
             else:
                 results = await cls.search(query, limit=1)
@@ -494,11 +493,10 @@ class YouTubeHandler:
                     filters.append("asetrate=48000*1.25")
             
             # Use high-quality soxr resampling to convert back to 48kHz PCM
-            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegOpusAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
             return source, title
         except Exception as e:
             logger.error(f"YouTube get_audio_source_for_song error: {e}")

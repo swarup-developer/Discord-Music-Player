@@ -453,8 +453,7 @@ class MusicCog(commands.Cog):
             source.volume = volume ** 2
             logger.info(f"sync_voice_volume: updated PCMVolumeTransformer volume to {source.volume}")
         else:
-            logger.info("sync_voice_volume: reloading current track with new volume filter")
-            asyncio.run_coroutine_threadsafe(self.reload_current_track(guild_id, None), self.bot.loop)
+            logger.warning(f"sync_voice_volume: source is not a PCMVolumeTransformer: {type(source)}")
 
     def _controller_embed(self, guild_id: int) -> discord.Embed:
         session = self._session(guild_id)
@@ -567,7 +566,6 @@ class MusicCog(commands.Cog):
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
-            filters.append(f"volume={volume ** 2}")
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
@@ -575,7 +573,7 @@ class MusicCog(commands.Cog):
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             try:
-                audio_source = discord.FFmpegOpusAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                audio_source = discord.FFmpegPCMAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
                 title = query.split("/")[-1] or "Direct Stream"
                 title = title.split("?")[0]
                 return audio_source, title
@@ -677,8 +675,13 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{query}**")
-        audio_source = JitterBuffer(audio_source)
-        session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
+        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
+        
+        # Resolve temp_file_path recursively
+        src = audio_source
+        while hasattr(src, "original"):
+            src = src.original
+        session.temp_file_path = getattr(src, "temp_file_path", None)
         session.start_time = time.time()
         session.paused_duration = 0.0
         session.last_paused_at = None
@@ -777,8 +780,13 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{song.get('song') or song.get('title') or 'Unknown'}**")
-        audio_source = JitterBuffer(audio_source)
-        session.temp_file_path = getattr(audio_source.original, "temp_file_path", None)
+        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
+        
+        # Resolve temp_file_path recursively
+        src = audio_source
+        while hasattr(src, "original"):
+            src = src.original
+        session.temp_file_path = getattr(src, "temp_file_path", None)
         session.start_time = time.time()
         session.paused_duration = 0.0
         session.last_paused_at = None
@@ -954,7 +962,14 @@ class MusicCog(commands.Cog):
             logger.warning(f"reload_current_track: failed to get audio source for guild {guild_id}")
             return
 
-        audio_source = JitterBuffer(audio_source)
+        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
+        
+        # Resolve temp_file_path recursively
+        src = audio_source
+        while hasattr(src, "original"):
+            src = src.original
+        session.temp_file_path = getattr(src, "temp_file_path", None)
+        
         session.start_time = time.time() - elapsed
         session.paused_duration = 0.0
         session.last_paused_at = None
@@ -982,6 +997,7 @@ class MusicCog(commands.Cog):
             session.voice_client.play(audio_source, after=after_reload)
             session.is_playing = True
             session.current_song_title = title
+            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
 
     async def _cleanup_if_empty(self, guild: discord.Guild) -> None:
         voice_client = guild.voice_client
