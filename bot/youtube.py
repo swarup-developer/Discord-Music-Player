@@ -29,9 +29,23 @@ YDL_OPTIONS = {
 
 def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     opts = {**YDL_OPTIONS}
+    
+    # Check for cookies.txt in common paths and use it if it exists
+    cookies_paths = [
+        "cookies.txt",
+        "bot/cookies.txt",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+    ]
+    for cp in cookies_paths:
+        if os.path.exists(cp):
+            opts['cookiefile'] = cp
+            break
+            
     if extra_opts:
         opts.update(extra_opts)
     return opts
+
 
 
 # Video ID extraction
@@ -65,10 +79,9 @@ INVIDIOUS_INSTANCES = [
 
 # Cobalt public instances list for fallback extraction
 COBALT_INSTANCES = [
-    "https://api.cobalt.tools/api/json",
-    "https://cobalt.api.ryder.rip/api/json",
-    "https://co.wuk.sh/api/json",
-    "https://api.wuk.sh/api/json"
+    "https://api.cobalt.blackcat.sweeux.org",
+    "https://cobaltapi.kittycat.boo",
+    "https://rue-cobalt.xenon.zone"
 ]
 
 
