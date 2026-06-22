@@ -11,6 +11,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 IPTV_URL = "https://iptv-org.github.io/iptv/index.language.m3u"
+IPTV_CAT_URL = "https://iptv-org.github.io/iptv/index.m3u"
 CACHE_FILE = "iptv_lang_cache.json"
 CACHE_EXPIRY = 24 * 60 * 60  # 24 hours in seconds
 
@@ -113,13 +114,34 @@ class IPTVManager:
         if not cls._channels:
             await cls.load_channels()
         normalized = language.strip().lower()
-        return cls._channels_by_language.get(normalized, [])
+        return [ch for ch in cls._channels if ch.get("language", "").lower() == normalized]
+
+    @classmethod
+    async def get_channels_filtered(cls, language: Optional[str] = None, country: Optional[str] = None, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not cls._channels:
+            await cls.load_channels()
+        
+        results = cls._channels
+        if language and language.lower() != "any":
+            lang_lower = language.lower()
+            results = [ch for ch in results if ch.get("language", "").lower() == lang_lower]
+            
+        if country and country.lower() != "any":
+            country_lower = country.lower()
+            code = COUNTRY_NAME_TO_CODE.get(country_lower) or country_lower
+            results = [ch for ch in results if ch.get("country_code", "").lower() == code]
+            
+        if category and category.lower() != "any" and category.lower() != "all categories":
+            cat_lower = category.lower()
+            results = [ch for ch in results if ch.get("category", "").lower() == cat_lower]
+            
+        return results
 
     @classmethod
     def get_all_languages(cls) -> List[str]:
         langs = set()
         for ch in cls._channels:
-            lang = ch.get("group_title")
+            lang = ch.get("language")
             if lang:
                 langs.add(lang)
         return sorted(list(langs))
@@ -161,13 +183,26 @@ class IPTVManager:
                     except Exception as e:
                         logger.error(f"Failed to read IPTV cache: {e}")
 
-            # Fetch and parse index
-            logger.info("Fetching IPTV index from iptv-org...")
+            # Fetch and parse indexes
+            logger.info("Fetching IPTV indexes from iptv-org...")
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(IPTV_URL)
-                if response.status_code == 200:
-                    text = response.text
-                    cls._channels = cls._parse_m3u(text)
+                response_lang = await client.get(IPTV_URL)
+                response_cat = await client.get(IPTV_CAT_URL)
+                
+                if response_lang.status_code == 200:
+                    text_lang = response_lang.text
+                    cls._channels = cls._parse_m3u(text_lang, is_lang=True)
+                    
+                    if response_cat.status_code == 200:
+                        text_cat = response_cat.text
+                        cat_channels = cls._parse_m3u(text_cat, is_lang=False)
+                        
+                        # Merge categories by URL
+                        url_map = {ch["url"]: ch for ch in cls._channels}
+                        for ch in cat_channels:
+                            if ch["url"] in url_map:
+                                url_map[ch["url"]]["category"] = ch.get("category", "General")
+                                
                     cls._rebuild_indices()
                     # Write to cache
                     try:
@@ -177,14 +212,14 @@ class IPTVManager:
                     except Exception as e:
                         logger.error(f"Failed to save IPTV cache: {e}")
                 else:
-                    logger.error(f"Failed to fetch IPTV index. Status code: {response.status_code}")
+                    logger.error(f"Failed to fetch IPTV index. Status code: {response_lang.status_code}")
         except Exception as e:
             logger.error(f"Error loading IPTV channels: {e}")
         finally:
             cls._is_loading = False
 
     @classmethod
-    def _parse_m3u(cls, content: str) -> List[Dict[str, Any]]:
+    def _parse_m3u(cls, content: str, is_lang: bool = True) -> List[Dict[str, Any]]:
         channels = []
         lines = content.splitlines()
         
@@ -197,7 +232,6 @@ class IPTVManager:
                 continue
             if line.startswith("#EXTINF:"):
                 # Parse metadata
-                # Format: #EXTINF:-1 tvg-id="..." tvg-logo="..." group-title="...",Channel Name
                 info = {}
                 
                 # Extract attributes using regex
@@ -207,7 +241,13 @@ class IPTVManager:
                 
                 info["tvg_id"] = tvg_id_match.group(1) if tvg_id_match else ""
                 info["logo"] = tvg_logo_match.group(1) if tvg_logo_match else ""
-                info["group_title"] = group_title_match.group(1) if group_title_match else ""
+                
+                if is_lang:
+                    info["language"] = group_title_match.group(1) if group_title_match else ""
+                    info["category"] = "General"
+                else:
+                    info["language"] = ""
+                    info["category"] = group_title_match.group(1) if group_title_match else "General"
                 
                 # Extract channel name (everything after the last comma)
                 comma_index = line.rfind(",")
@@ -252,7 +292,7 @@ class IPTVManager:
                 cls._channels_by_country[code].append(ch)
             
             # Language indexing
-            lang = ch.get("group_title")
+            lang = ch.get("language")
             if lang:
                 lang_key = lang.strip().lower()
                 if lang_key not in cls._channels_by_language:
@@ -324,15 +364,32 @@ class LanguageSelect(discord.ui.Select):
         await interaction.response.defer()
         selected_lang = self.values[0]
         
-        # Get channels for this language
-        channels = await IPTVManager.get_channels_by_language(selected_lang)
-        if not channels:
-            await interaction.followup.send(f"No channels found for language: {selected_lang}.", ephemeral=True)
-            return
-
-        # Show channels view (with is_language=True)
-        view = IPTVChannelView(selected_lang, channels, interaction.user.id, is_language=True)
-        embed = view.get_embed()
+        # Get unique countries for this language
+        channels = await IPTVManager.get_channels_filtered(language=selected_lang)
+        
+        # Extract countries
+        country_codes_set = {ch.get("country_code") for ch in channels if ch.get("country_code")}
+        
+        # Build options list
+        options = []
+        options.append(discord.SelectOption(label="Any Country", value="any", emoji="🌐"))
+        
+        for code in sorted(list(country_codes_set)):
+            name = COUNTRY_CODES.get(code)
+            if name:
+                options.append(discord.SelectOption(label=name, value=code, emoji="📍"))
+            else:
+                options.append(discord.SelectOption(label=code.upper(), value=code, emoji="📍"))
+                 
+        if len(options) > 25:
+            options = options[:25]
+             
+        view = IPTVCountrySelectView(self.view.user_id, selected_lang, options)
+        embed = discord.Embed(
+            title=f"📺 IPTV Country Selection ({selected_lang})",
+            description=f"Select a country for **{selected_lang}** channels.",
+            color=discord.Color.blue()
+        )
         await interaction.edit_original_response(embed=embed, view=view)
 
 
@@ -350,6 +407,158 @@ class LanguageSelectView(discord.ui.View):
             await interaction.response.send_message("Only the user who started the browse command can interact with this menu.", ephemeral=True)
             return False
         return True
+
+
+class IPTVCountrySelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(
+            placeholder="Select a country...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="iptv_step_country_select"
+        )
+        
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        selected_country = self.values[0]
+        
+        # Get channels for this language and country
+        channels = await IPTVManager.get_channels_filtered(
+            language=self.view.selected_lang,
+            country=selected_country
+        )
+        
+        # Extract unique categories
+        categories_set = {ch.get("category") for ch in channels if ch.get("category")}
+        
+        # Build options list
+        options = []
+        options.append(discord.SelectOption(label="All Categories", value="any", emoji="📁"))
+        
+        for cat in sorted(list(categories_set)):
+            if cat and cat.lower() != "undefined":
+                options.append(discord.SelectOption(label=cat, value=cat, emoji="🏷️"))
+                
+        if len(options) > 25:
+            options = options[:25]
+            
+        view = IPTVCategorySelectView(self.view.user_id, self.view.selected_lang, selected_country, options)
+        embed = discord.Embed(
+            title=f"📺 IPTV Category Selection ({self.view.selected_lang})",
+            description=f"Select a category for channels in **{self.view.selected_lang}**.",
+            color=discord.Color.blue()
+        )
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
+class IPTVCountrySelectView(discord.ui.View):
+    def __init__(self, user_id: int, selected_lang: str, options: List[discord.SelectOption]):
+        super().__init__(timeout=180.0)
+        self.user_id = user_id
+        self.selected_lang = selected_lang
+        self.options = options
+        
+        self.add_item(IPTVCountrySelect(options))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the user who started the browse command can interact with this menu.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⬅ Back to Languages", style=discord.ButtonStyle.danger, custom_id="iptv_back_to_langs", row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        view = LanguageSelectView(self.user_id)
+        embed = discord.Embed(
+            title="📺 IPTV Language Selection",
+            description="Select a language from the dropdown below to view its live television feeds.",
+            color=discord.Color.blue()
+        )
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
+class IPTVCategorySelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(
+            placeholder="Select a category (Optional)...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="iptv_step_category_select"
+        )
+        
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        selected_category = self.values[0]
+        
+        # Get final channels list
+        channels = await IPTVManager.get_channels_filtered(
+            language=self.view.selected_lang,
+            country=self.view.selected_country,
+            category=selected_category
+        )
+        
+        if not channels:
+            await interaction.followup.send("No channels found matching selection.", ephemeral=True)
+            return
+            
+        # Show channels view
+        view = IPTVChannelView(
+            country=f"{self.view.selected_lang} - {self.view.selected_country.upper()}",
+            channels=channels,
+            user_id=self.view.user_id,
+            is_language=True,
+            language=self.view.selected_lang,
+            country_code=self.view.selected_country,
+            category=selected_category
+        )
+        embed = view.get_embed()
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
+class IPTVCategorySelectView(discord.ui.View):
+    def __init__(self, user_id: int, selected_lang: str, selected_country: str, options: List[discord.SelectOption]):
+        super().__init__(timeout=180.0)
+        self.user_id = user_id
+        self.selected_lang = selected_lang
+        self.selected_country = selected_country
+        self.options = options
+        
+        self.add_item(IPTVCategorySelect(options))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the user who started the browse command can interact with this menu.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⬅ Back to Countries", style=discord.ButtonStyle.danger, custom_id="iptv_back_to_countries", row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        # Reconstruct CountrySelect options
+        channels = await IPTVManager.get_channels_filtered(language=self.selected_lang)
+        country_codes_set = {ch.get("country_code") for ch in channels if ch.get("country_code")}
+        options = []
+        options.append(discord.SelectOption(label="Any Country", value="any", emoji="🌐"))
+        for code in sorted(list(country_codes_set)):
+            name = COUNTRY_CODES.get(code)
+            if name:
+                options.append(discord.SelectOption(label=name, value=code, emoji="📍"))
+            else:
+                options.append(discord.SelectOption(label=code.upper(), value=code, emoji="📍"))
+        if len(options) > 25:
+            options = options[:25]
+            
+        view = IPTVCountrySelectView(self.user_id, self.selected_lang, options)
+        embed = discord.Embed(
+            title=f"📺 IPTV Country Selection ({self.selected_lang})",
+            description=f"Select a country for **{self.selected_lang}** channels.",
+            color=discord.Color.blue()
+        )
+        await interaction.edit_original_response(embed=embed, view=view)
 
 
 class ChannelSelect(discord.ui.Select):
@@ -437,18 +646,21 @@ class ChannelSelect(discord.ui.Select):
 
 
 class IPTVChannelView(discord.ui.View):
-    def __init__(self, country: str, channels: List[Dict[str, Any]], user_id: int, page: int = 0, is_language: bool = False):
+    def __init__(self, country: str, channels: List[Dict[str, Any]], user_id: int, page: int = 0, is_language: bool = False, language: str = "", country_code: str = "", category: str = ""):
         super().__init__(timeout=180.0)
         self.country = country
         self.channels = channels
         self.user_id = user_id
         self.page = page
         self.is_language = is_language
+        self.language = language
+        self.country_code = country_code
+        self.category = category
         self.max_page = (len(channels) - 1) // 25
         
         # Update back button label dynamically
         if self.is_language:
-            self.back_button.label = "⬅ Back to Languages"
+            self.back_button.label = "⬅ Back to Categories"
         else:
             self.back_button.label = "⬅ Back to Countries"
         
@@ -522,12 +734,27 @@ class IPTVChannelView(discord.ui.View):
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         if self.is_language:
-            view = LanguageSelectView(self.user_id)
+            # Reconstruct CategorySelect options
+            channels = await IPTVManager.get_channels_filtered(
+                language=self.language,
+                country=self.country_code
+            )
+            categories_set = {ch.get("category") for ch in channels if ch.get("category")}
+            options = []
+            options.append(discord.SelectOption(label="All Categories", value="any", emoji="📁"))
+            for cat in sorted(list(categories_set)):
+                if cat and cat.lower() != "undefined":
+                    options.append(discord.SelectOption(label=cat, value=cat, emoji="🏷️"))
+            if len(options) > 25:
+                options = options[:25]
+                
+            view = IPTVCategorySelectView(self.user_id, self.language, self.country_code, options)
             embed = discord.Embed(
-                title="📺 IPTV Language Selection",
-                description="Select a language from the dropdown below to view its live television feeds.",
+                title=f"📺 IPTV Category Selection ({self.language})",
+                description=f"Select a category for channels in **{self.language}**.",
                 color=discord.Color.blue()
             )
+            await interaction.edit_original_response(embed=embed, view=view)
         else:
             view = CountrySelectView(self.user_id)
             embed = discord.Embed(
@@ -535,4 +762,4 @@ class IPTVChannelView(discord.ui.View):
                 description="Select a country from the dropdown below to view its live television feeds.",
                 color=discord.Color.blue()
             )
-        await interaction.edit_original_response(embed=embed, view=view)
+            await interaction.edit_original_response(embed=embed, view=view)

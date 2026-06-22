@@ -163,8 +163,7 @@ Type "/" in your Discord server to see the commands:
 *   /help - Shows the help menu.
 
 ### 📺 IPTV Live TV Commands
-*   /tv browse - Browse live TV feeds by country selection.
-*   /tv language - Browse live TV feeds by language selection.
+*   /tv browse - Browse live TV feeds using a step-by-step selection flow (Language -> Country -> Category).
 *   /tv play [channel] - Play a specific live TV channel by name.
 *   /tv search [query] - Search TV channels and select one from the list.
 

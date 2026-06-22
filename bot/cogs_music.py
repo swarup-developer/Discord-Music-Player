@@ -1711,26 +1711,8 @@ class MusicCog(commands.Cog):
     # ==========================================
     tv_group = discord.app_commands.Group(name="tv", description="IPTV live television streaming commands")
 
-    @tv_group.command(name="browse", description="Browse live TV feeds by country-first selection")
+    @tv_group.command(name="browse", description="Browse live TV feeds by language selection")
     async def tv_browse(self, interaction: discord.Interaction):
-        await self._ensure_deferred(interaction)
-        if not self._should_respond(interaction):
-            return await interaction.followup.send("Join a voice channel first!")
-        if interaction.guild and self.state.is_active_in_other_guild(interaction.guild.id):
-            return await interaction.followup.send(
-                "This bot is already active in another server. Leave that server's voice channel first."
-            )
-            
-        view = CountrySelectView(interaction.user.id)
-        embed = discord.Embed(
-            title="📺 IPTV Country Selection",
-            description="Select a country from the dropdown below to view its live television feeds.",
-            color=discord.Color.blue()
-        )
-        await interaction.followup.send(embed=embed, view=view)
-
-    @tv_group.command(name="language", description="Browse live TV feeds by language selection")
-    async def tv_language(self, interaction: discord.Interaction):
         await self._ensure_deferred(interaction)
         if not self._should_respond(interaction):
             return await interaction.followup.send("Join a voice channel first!")
