@@ -867,6 +867,37 @@ class MusicCog(commands.Cog):
         volume = self.state.get_volume(interaction.guild.id)
         effects = self.state.get_effects(interaction.guild.id)
         eq_preset = self.state.get_eq_preset(interaction.guild.id)
+
+        # Check reachability of direct streams (M3U8, etc.) before connecting voice/ffmpeg
+        if (query.startswith("http://") or query.startswith("https://")) and not (
+            JioSaavnHandler.is_jiosaavn_url(query) or
+            YouTubeHandler.is_youtube_url(query) or
+            SoundCloudHandler.is_soundcloud_url(query)
+        ):
+            is_reachable = True
+            error_reason = ""
+            try:
+                import httpx
+                headers = {"User-Agent": "Mozilla/5.0"}
+                async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
+                    resp = await client.head(query, headers=headers)
+                    if resp.status_code >= 400:
+                        resp = await client.get(query, headers=headers)
+                    if resp.status_code >= 400:
+                        is_reachable = False
+                        error_reason = f"HTTP {resp.status_code}"
+            except Exception as e:
+                is_reachable = False
+                error_reason = str(e)
+                
+            if not is_reachable:
+                logger.error(f"Direct stream reachability check failed for {query}: {error_reason}")
+                stream_name = title or query.split("/")[-1].split("?")[0] or "Direct Stream"
+                return await interaction.followup.send(
+                    f"❌ **Failed to connect to the stream**: {error_reason or 'Connection timed out'}.\n"
+                    f"The channel **{stream_name}** might be offline or temporarily down."
+                )
+
         audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{query}**")
