@@ -406,6 +406,44 @@ class YouTubeHandler:
             return None
 
     @classmethod
+    async def _download_stream_to_tempfile(cls, stream_url: str, max_bytes: int = 250 * 1024 * 1024) -> Optional[str]:
+        try:
+            import httpx
+            import tempfile
+            headers = {"User-Agent": "Mozilla/5.0"}
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                async with client.stream("GET", stream_url, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        logger.error(f"Failed to download YouTube stream: HTTP {resp.status_code}")
+                        return None
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                    tmp_name = tmp.name
+                    total = 0
+                    try:
+                        with tmp as f:
+                            async for chunk in resp.aiter_bytes(chunk_size=128 * 1024):
+                                f.write(chunk)
+                                total += len(chunk)
+                                if total > max_bytes:
+                                    break
+                        if total > max_bytes:
+                            try:
+                                os.remove(tmp_name)
+                            except Exception:
+                                pass
+                            return None
+                        return tmp_name
+                    except Exception as e:
+                        try:
+                            os.remove(tmp_name)
+                        except Exception:
+                            pass
+                        raise e
+        except Exception as e:
+            logger.error(f"YouTube download stream error: {e}")
+            return None
+
+    @classmethod
     async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             if cls.is_youtube_url(query):
@@ -413,8 +451,14 @@ class YouTubeHandler:
                 if not meta:
                     return None, None
                 stream_url, title, is_live, duration = meta
-                source_path = stream_url
-                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+                
+                # Download stream to temporary local file to prevent buffering lag
+                temp_path = await cls._download_stream_to_tempfile(stream_url)
+                if not temp_path:
+                    return None, None
+                
+                source_path = temp_path
+                ffmpeg_before_options = "-nostdin"
                 if seek and seek > 0:
                     ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
                 
@@ -439,7 +483,9 @@ class YouTubeHandler:
                         filters.append("asetrate=48000*1.25")
                 filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
                 ffmpeg_options += f' -af "{",".join(filters)}"'
+                
                 source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                source.temp_file_path = temp_path
                 return source, title
             else:
                 results = await cls.search(query, limit=1)
@@ -464,8 +510,13 @@ class YouTubeHandler:
             
             stream_url, title, is_live, duration = meta
             
-            source_path = stream_url
-            ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+            # Download stream to temporary local file to prevent buffering lag
+            temp_path = await cls._download_stream_to_tempfile(stream_url)
+            if not temp_path:
+                return None, None
+                
+            source_path = temp_path
+            ffmpeg_before_options = "-nostdin"
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
@@ -494,6 +545,7 @@ class YouTubeHandler:
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
             source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source.temp_file_path = temp_path
             return source, title
         except Exception as e:
             logger.error(f"YouTube get_audio_source_for_song error: {e}")

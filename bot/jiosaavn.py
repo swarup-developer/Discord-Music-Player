@@ -218,7 +218,12 @@ class JioSaavnHandler:
             if not media_url:
                 return None, None
             
-            ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
+            # Download stream to local temporary file to prevent buffering lag
+            temp_path = await cls._download_stream_to_tempfile(media_url)
+            if not temp_path:
+                return None, None
+                
+            ffmpeg_before_options = "-nostdin"
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
@@ -244,7 +249,8 @@ class JioSaavnHandler:
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
-            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source.temp_file_path = temp_path
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
@@ -263,7 +269,12 @@ class JioSaavnHandler:
             if not media_url:
                 return None, None
 
-            ffmpeg_before_options = '-headers "User-Agent: Mozilla/5.0\r\nReferer: https://www.jiosaavn.com/\r\n" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
+            # Download stream to local temporary file to prevent buffering lag
+            temp_path = await cls._download_stream_to_tempfile(media_url)
+            if not temp_path:
+                return None, None
+
+            ffmpeg_before_options = "-nostdin"
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
@@ -289,7 +300,8 @@ class JioSaavnHandler:
             filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(media_url, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+            source.temp_file_path = temp_path
             return source, cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
         except Exception as e:
             logger.error(f"Audio source error: {e}")
