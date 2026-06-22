@@ -421,12 +421,14 @@ class IPTVCountrySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         selected_country = self.values[0]
+        logger.info(f"IPTVCountrySelect: selected_country={selected_country}, lang={self.view.selected_lang}")
         
         # Get channels for this language and country
         channels = await IPTVManager.get_channels_filtered(
             language=self.view.selected_lang,
             country=selected_country
         )
+        logger.info(f"IPTVCountrySelect: found {len(channels)} channels for lang={self.view.selected_lang}, country={selected_country}")
         
         # Extract unique categories
         categories_set = {ch.get("category") for ch in channels if ch.get("category")}
@@ -491,6 +493,7 @@ class IPTVCategorySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         selected_category = self.values[0]
+        logger.info(f"IPTVCategorySelect: selected_category={selected_category}, country={self.view.selected_country}, lang={self.view.selected_lang}")
         
         # Get final channels list
         channels = await IPTVManager.get_channels_filtered(
@@ -498,6 +501,7 @@ class IPTVCategorySelect(discord.ui.Select):
             country=self.view.selected_country,
             category=selected_category
         )
+        logger.info(f"IPTVCategorySelect: found {len(channels)} final channels")
         
         if not channels:
             await interaction.followup.send("No channels found matching selection.", ephemeral=True)
