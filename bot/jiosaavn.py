@@ -246,7 +246,7 @@ class JioSaavnHandler:
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
-            filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
+            filters.append("aresample=osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
             source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
@@ -297,7 +297,7 @@ class JioSaavnHandler:
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
-            filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
+            filters.append("aresample=osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
             source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)

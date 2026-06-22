@@ -566,7 +566,7 @@ class MusicCog(commands.Cog):
                     filters.append("equalizer=f=60:width_type=o:width=2:g=8")
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
-            filters.append("aresample=resampler=soxr:osr=48000:osf=s16")
+            filters.append("aresample=osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
             
             ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
