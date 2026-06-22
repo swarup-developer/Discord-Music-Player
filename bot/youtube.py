@@ -155,51 +155,6 @@ class YouTubeHandler:
         return []
 
     @classmethod
-    async def _youtube_api_search(cls, query: str, limit: int = 10) -> list[dict]:
-        """Search YouTube using the official Data API v3."""
-        from .config import YOUTUBE_API_KEY
-        if not YOUTUBE_API_KEY:
-            return []
-        
-        import httpx
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": query,
-            "type": "video",
-            "maxResults": limit,
-            "key": YOUTUBE_API_KEY
-        }
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(url, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    results = []
-                    for item in data.get("items", []):
-                        video_id = item.get("id", {}).get("videoId")
-                        snippet = item.get("snippet", {})
-                        if not video_id:
-                            continue
-                        title = snippet.get("title", "Unknown YouTube Video")
-                        channel_title = snippet.get("channelTitle", "YouTube")
-                        results.append({
-                            'id': video_id,
-                            'title': title,
-                            'song': title,
-                            'album': channel_title,
-                            'url': f"https://www.youtube.com/watch?v={video_id}",
-                            'duration': None,
-                            'provider': 'youtube'
-                        })
-                    return results
-                else:
-                    logger.warning(f"YouTube V3 API search returned status {response.status_code}: {response.text}")
-        except Exception as e:
-            logger.error(f"YouTube V3 API search error: {e}")
-        return []
-
-    @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
@@ -208,23 +163,25 @@ class YouTubeHandler:
                 return []
             return await cls._ydl_search(query, limit)
 
-        # Try official YouTube API search first
-        api_results = await cls._youtube_api_search(query, limit)
-        if api_results:
-            return api_results
+        # Prioritize yt-dlp search with cookies.txt
+        logger.info(f"Searching YouTube via yt-dlp for query: '{query}'")
+        ydl_results = await cls._ydl_search(query, limit)
+        if ydl_results:
+            return ydl_results
 
-        # Try Invidious search first as a cookie-free fallback
+        # Fallback to Invidious search if yt-dlp search fails
+        logger.info("yt-dlp search returned no results. Trying Invidious search fallback...")
         invidious_results = await cls._invidious_search(query, limit)
         if invidious_results:
             return invidious_results
 
-        return await cls._ydl_search(query, limit)
+        return []
 
     @classmethod
     async def _ydl_search(cls, query: str, limit: int = 10) -> list[dict]:
         """yt-dlp-based search. """
         def _search():
-            ydl_opts = get_ydl_opts({'playlist_items': f'1-{limit}'})
+            ydl_opts = get_ydl_opts({'playlist_items': f'1-{limit}', 'extract_flat': True})
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 if query.startswith("http://") or query.startswith("https://"):
                     try:
