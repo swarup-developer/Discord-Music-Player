@@ -16,6 +16,8 @@ This is a personal, open-source project. I have no official association with Goo
 *   **Interactive Control Board**: Sends a clean message with play, pause, skip, filter, and volume buttons so you don't have to type commands every time.
 *   **Fast Dependencies**: Managed with uv for lightning-fast installation and updates.
 *   **Startup Sound**: Plays a customizable audio file when the bot joins a voice channel.
+*   **Live TV & Radio**: Browse and stream live television feeds (by language or country selection) and pre-configured internet radio stations.
+*   **Custom Default Providers**: Set YouTube, JioSaavn, SoundCloud, Spotify, or Local Files as the default music search/playback provider.
 
 ### 🎵 Startup Sound
 You can set up a custom sound to play immediately whenever the bot joins a voice channel:
@@ -144,7 +146,7 @@ Type "/" in your Discord server to see the commands:
 *   /play [song] - Plays a song by name or queues it.
 *   /url [link] - Plays a YouTube or direct audio stream link.
 *   /search [query] - Search for songs on YouTube or JioSaavn.
-*   /provider - Switches between YouTube and JioSaavn.
+*   /provider - Set the default music provider (YouTube / JioSaavn / SoundCloud / Spotify / Local Files).
 *   /queue - Shows what songs are playing next.
 *   /lyrics [song] - Looks up lyrics for the current or a searched song.
 *   /volume [0-100] - Adjusts the music volume.
@@ -159,6 +161,20 @@ Type "/" in your Discord server to see the commands:
 *   /diagnose - Checks voice latency and connection issues.
 *   /voicecheck - Verifies current voice status.
 *   /help - Shows the help menu.
+
+### 📺 IPTV Live TV Commands
+*   /tv browse - Browse live TV feeds by country selection.
+*   /tv language - Browse live TV feeds by language selection.
+*   /tv play [channel] - Play a specific live TV channel by name.
+*   /tv search [query] - Search TV channels and select one from the list.
+
+### 📻 Internet Radio Commands
+*   /radio list - List pre-configured radio stations.
+*   /radio play [url] - Play a custom radio stream URL.
+
+### 📁 Local Audio Commands
+*   /local list - List available local files in the `audio/` directory.
+*   /local play [filename] - Play a local audio file.
 
 ---
 
