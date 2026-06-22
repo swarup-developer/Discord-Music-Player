@@ -1,0 +1,32 @@
+[
+    {
+        "name": "Bollywood Hits (Indian)",
+        "url": "http://108.61.34.50:7042/;stream.mp3",
+        "category": "Bollywood"
+    },
+    {
+        "name": "Lofi Hip Hop (ChilledCow)",
+        "url": "https://play.streamafrica.com/lofi-hiphop",
+        "category": "Lofi"
+    },
+    {
+        "name": "Synthwave Retro Radio",
+        "url": "http://185.33.21.112:80/retro_synthwave",
+        "category": "Synthwave"
+    },
+    {
+        "name": "BBC Radio 1 (UK)",
+        "url": "http://stream.live.vc.bbc.co.uk/bbc_radio_one",
+        "category": "News/Pop"
+    },
+    {
+        "name": "Classic Rock Radio",
+        "url": "http://185.33.21.112:80/rock_block",
+        "category": "Rock"
+    },
+    {
+        "name": "Smooth Jazz Radio",
+        "url": "http://185.33.21.112:80/smooth_jazz",
+        "category": "Jazz"
+    }
+]

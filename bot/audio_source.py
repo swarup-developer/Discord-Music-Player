@@ -8,7 +8,7 @@ class JitterBuffer(discord.AudioSource):
     def __init__(self, source: discord.AudioSource, max_delay_ms: int = 1000):
         self.source = source
         self.original = source
-        self.last_read_time = None
+        self.expected_time = None
 
     def read(self) -> bytes:
         data = self.source.read()
@@ -16,12 +16,18 @@ class JitterBuffer(discord.AudioSource):
             return b""
         
         now = time.perf_counter()
-        if self.last_read_time is not None:
-            elapsed = now - self.last_read_time
-            # Enforce 20ms pacing to prevent 2.5x catch-up from FFmpeg bursts
-            if elapsed < 0.019:
-                time.sleep(0.02 - elapsed)
-        self.last_read_time = time.perf_counter()
+        if self.expected_time is None:
+            self.expected_time = now
+        
+        self.expected_time += 0.02
+        delay = self.expected_time - now
+        
+        # Limit the maximum drift (lag spike recovery)
+        if delay < -0.1:
+            self.expected_time = now
+        elif delay > 0:
+            time.sleep(delay)
+            
         return data
 
     def is_opus(self) -> bool:

@@ -458,11 +458,11 @@ class YouTubeHandler:
                     return None, None
                 
                 source_path = temp_path
-                ffmpeg_before_options = "-nostdin"
+                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
                 if seek and seek > 0:
                     ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
                 
-                ffmpeg_options = "-vn"
+                ffmpeg_options = "-vn -flags low_delay"
                 filters = []
                 if eq_preset:
                     if eq_preset == "bassboost":
@@ -516,11 +516,11 @@ class YouTubeHandler:
                 return None, None
                 
             source_path = temp_path
-            ffmpeg_before_options = "-nostdin"
+            ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
-            ffmpeg_options = "-vn"
+            ffmpeg_options = "-vn -flags low_delay"
             filters = []
             if eq_preset:
                 if eq_preset == "bassboost":
