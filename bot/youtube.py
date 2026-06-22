@@ -31,17 +31,6 @@ def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     opts = {**YDL_OPTIONS}
     if extra_opts:
         opts.update(extra_opts)
-        
-    # Check for cookies.txt in current working directory or bot directory
-    cookie_path = os.path.join(os.getcwd(), 'cookies.txt')
-    if os.path.exists(cookie_path):
-        opts['cookiefile'] = cookie_path
-    else:
-        # Check bot directory as fallback
-        fallback_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cookies.txt')
-        if os.path.exists(fallback_path):
-            opts['cookiefile'] = fallback_path
-            
     return opts
 
 
@@ -155,6 +144,51 @@ class YouTubeHandler:
         return []
 
     @classmethod
+    async def _youtube_api_search(cls, query: str, limit: int = 10) -> list[dict]:
+        """Search YouTube using the official Data API v3."""
+        from .config import YOUTUBE_API_KEY
+        if not YOUTUBE_API_KEY:
+            return []
+        
+        import httpx
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "maxResults": limit,
+            "key": YOUTUBE_API_KEY
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    data = response.json()
+                    results = []
+                    for item in data.get("items", []):
+                        video_id = item.get("id", {}).get("videoId")
+                        snippet = item.get("snippet", {})
+                        if not video_id:
+                            continue
+                        title = snippet.get("title", "Unknown YouTube Video")
+                        channel_title = snippet.get("channelTitle", "YouTube")
+                        results.append({
+                            'id': video_id,
+                            'title': title,
+                            'song': title,
+                            'album': channel_title,
+                            'url': f"https://www.youtube.com/watch?v={video_id}",
+                            'duration': None,
+                            'provider': 'youtube'
+                        })
+                    return results
+                else:
+                    logger.warning(f"YouTube V3 API search returned status {response.status_code}: {response.text}")
+        except Exception as e:
+            logger.error(f"YouTube V3 API search error: {e}")
+        return []
+
+    @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
@@ -163,19 +197,21 @@ class YouTubeHandler:
                 return []
             return await cls._ydl_search(query, limit)
 
-        # Prioritize yt-dlp search with cookies.txt
-        logger.info(f"Searching YouTube via yt-dlp for query: '{query}'")
-        ydl_results = await cls._ydl_search(query, limit)
-        if ydl_results:
-            return ydl_results
+        # Try official YouTube API search first
+        logger.info(f"Searching YouTube via official V3 API for query: '{query}'")
+        api_results = await cls._youtube_api_search(query, limit)
+        if api_results:
+            return api_results
 
-        # Fallback to Invidious search if yt-dlp search fails
-        logger.info("yt-dlp search returned no results. Trying Invidious search fallback...")
+        # Try Invidious search next
+        logger.info("YouTube V3 API search returned no results. Trying Invidious search fallback...")
         invidious_results = await cls._invidious_search(query, limit)
         if invidious_results:
             return invidious_results
 
-        return []
+        # Fallback to yt-dlp search if both fail
+        logger.info("Invidious search returned no results. Trying yt-dlp search fallback...")
+        return await cls._ydl_search(query, limit)
 
     @classmethod
     async def _ydl_search(cls, query: str, limit: int = 10) -> list[dict]:
