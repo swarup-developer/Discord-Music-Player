@@ -15,7 +15,7 @@ from .youtube import YouTubeHandler
 from .soundcloud import SoundCloudHandler
 from .spotify import SpotifyHandler
 from .local_files import LocalFileHandler
-from .tv import IPTVManager, CountrySelectView, IPTVChannelView
+from .tv import IPTVManager, CountrySelectView, IPTVChannelView, LanguageSelectView
 from .state import BotState, QueueItem
 from .audio_source import JitterBuffer
 from .search import search_songs
@@ -1725,6 +1725,24 @@ class MusicCog(commands.Cog):
         embed = discord.Embed(
             title="📺 IPTV Country Selection",
             description="Select a country from the dropdown below to view its live television feeds.",
+            color=discord.Color.blue()
+        )
+        await interaction.followup.send(embed=embed, view=view)
+
+    @tv_group.command(name="language", description="Browse live TV feeds by language selection")
+    async def tv_language(self, interaction: discord.Interaction):
+        await self._ensure_deferred(interaction)
+        if not self._should_respond(interaction):
+            return await interaction.followup.send("Join a voice channel first!")
+        if interaction.guild and self.state.is_active_in_other_guild(interaction.guild.id):
+            return await interaction.followup.send(
+                "This bot is already active in another server. Leave that server's voice channel first."
+            )
+            
+        view = LanguageSelectView(interaction.user.id)
+        embed = discord.Embed(
+            title="📺 IPTV Language Selection",
+            description="Select a language from the dropdown below to view its live television feeds.",
             color=discord.Color.blue()
         )
         await interaction.followup.send(embed=embed, view=view)
