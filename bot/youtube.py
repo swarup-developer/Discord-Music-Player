@@ -345,12 +345,8 @@ class YouTubeHandler:
 
     @classmethod
     def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Extract stream URL using Cobalt/Invidious fallbacks, with yt-dlp as final fallback. Blocking."""
-        fallback = cls._extract_stream_url_fallback(url)
-        if fallback:
-            return fallback
-
-        logger.info("Falling back to yt-dlp for stream extraction...")
+        """Extract stream URL using yt-dlp as primary method, with Cobalt/Invidious as fallbacks. Blocking."""
+        logger.info(f"Attempting primary stream extraction via yt-dlp for: {url}")
         ydl_opts = get_ydl_opts({
             'format': 'bestaudio/best',
             'quiet': True,
@@ -359,16 +355,24 @@ class YouTubeHandler:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
-                if not info:
-                    return None
-                stream_url = info.get('url')
-                title = info.get('title', 'Unknown YouTube Video')
-                is_live = info.get('is_live', False) or info.get('live_status') == 'is_live'
-                duration = info.get('duration', 0)
-                return stream_url, title, is_live, duration
+                if info:
+                    stream_url = info.get('url')
+                    title = info.get('title', 'Unknown YouTube Video')
+                    is_live = info.get('is_live', False) or info.get('live_status') == 'is_live'
+                    duration = info.get('duration', 0)
+                    if stream_url:
+                        logger.info(f"yt-dlp stream extraction succeeded for: {url}")
+                        return stream_url, title, is_live, duration
             except Exception as e:
                 logger.error(f"yt-dlp extract_stream_url failed: {e}")
-                return None
+
+        # If yt-dlp fails (e.g. cookie expires or network block), try Invidious/Cobalt public fallbacks
+        logger.info("yt-dlp extraction failed. Trying Invidious/Cobalt public API fallbacks...")
+        fallback = cls._extract_stream_url_fallback(url)
+        if fallback:
+            return fallback
+
+        return None
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
