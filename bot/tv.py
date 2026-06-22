@@ -102,10 +102,9 @@ class IPTVManager:
         if code:
             return cls._channels_by_country.get(code, [])
             
-        # Fallback search by matching country code in tvg-id or group-title
         results = []
         for ch in cls._channels:
-            if ch.get("country_code") == normalized or ch.get("group_title", "").lower() == normalized:
+            if ch.get("country_code") == normalized or ch.get("category", "").lower() == normalized:
                 results.append(ch)
         return results
 
@@ -572,18 +571,22 @@ class ChannelSelect(discord.ui.Select):
         page_channels = channels[start:end]
         
         options = []
-        for ch in page_channels:
+        for idx, ch in enumerate(page_channels):
             name = ch["name"]
             if len(name) > 80:
                 name = name[:77] + "..."
             
             geo_emoji = "⚠️" if ch.get("geo_blocked") else "📺"
-            category = ch.get("group_title", "General")
+            category = ch.get("category", "General")
+            
+            # Use string representation of the index in the full channels list as the select value
+            # to stay within Discord's 100 character SelectOption value limit
+            actual_index = start + idx
             
             options.append(
                 discord.SelectOption(
                     label=name,
-                    value=ch["url"],
+                    value=str(actual_index),
                     description=f"Category: {category}",
                     emoji=geo_emoji
                 )
@@ -599,10 +602,14 @@ class ChannelSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        selected_url = self.values[0]
-        
+        try:
+            selected_index = int(self.values[0])
+            channel_data = self.channels[selected_index]
+            selected_url = channel_data["url"]
+        except (ValueError, IndexError):
+            return
+            
         # Find chosen channel details
-        channel_data = next((ch for ch in self.channels if ch["url"] == selected_url), None)
         if not channel_data:
             return
             
