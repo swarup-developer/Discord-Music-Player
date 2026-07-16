@@ -8,6 +8,7 @@ import urllib.request
 from typing import Optional, Any
 
 import discord
+import httpx
 import yt_dlp
 
 logger = logging.getLogger(__name__)
@@ -120,41 +121,62 @@ class YouTubeHandler:
     # Public API functions
     @classmethod
     async def _invidious_search(cls, query: str, limit: int = 10) -> list[dict]:
-        """Search YouTube videos using Invidious API."""
+        """Search YouTube videos using Invidious API in parallel."""
         import urllib.parse
         encoded_query = urllib.parse.quote(query)
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         instances = cls._get_invidious_instances()
-        for instance in instances:
+
+        async def _query_instance(client: httpx.AsyncClient, instance: str) -> Optional[list[dict]]:
             api_url = f"https://{instance}/api/v1/search?q={encoded_query}&type=video"
             try:
-                def _fetch():
-                    req = urllib.request.Request(api_url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        return json.loads(response.read().decode())
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, _fetch)
-                if data:
-                    results = []
-                    for entry in data[:limit]:
-                        if not entry or not entry.get("videoId"):
-                            continue
-                        results.append({
-                            'id': entry.get('videoId'),
-                            'title': entry.get('title') or 'Unknown YouTube Video',
-                            'song': entry.get('title') or 'Unknown YouTube Video',
-                            'album': entry.get('author') or 'YouTube',
-                            'url': f"https://www.youtube.com/watch?v={entry.get('videoId')}",
-                            'duration': entry.get('lengthSeconds'),
-                            'provider': 'youtube'
-                        })
-                    if results:
-                        cls._working_invidious_instance = instance
-                        logger.info(f"Invidious search succeeded for '{query}' using {instance}")
-                        return results
+                response = await client.get(api_url, timeout=3.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data:
+                        results = []
+                        for entry in data[:limit]:
+                            if not entry or not entry.get("videoId"):
+                                continue
+                            results.append({
+                                'id': entry.get('videoId'),
+                                'title': entry.get('title') or 'Unknown YouTube Video',
+                                'song': entry.get('title') or 'Unknown YouTube Video',
+                                'album': entry.get('author') or 'YouTube',
+                                'url': f"https://www.youtube.com/watch?v={entry.get('videoId')}",
+                                'duration': entry.get('lengthSeconds'),
+                                'provider': 'youtube'
+                            })
+                        if results:
+                            cls._working_invidious_instance = instance
+                            logger.info(f"Invidious search succeeded for '{query}' using {instance}")
+                            return results
             except Exception as e:
-                logger.warning(f"Invidious search failed on {instance}: {e}")
-        return []
+                logger.debug(f"Invidious search failed on {instance}: {e}")
+            return None
+
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+            tasks = [asyncio.create_task(_query_instance(client, inst)) for inst in instances]
+            pending = set(tasks)
+            results = None
+            
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    try:
+                        res = task.result()
+                        if res:
+                            results = res
+                            break
+                    except Exception:
+                        pass
+                if results:
+                    break
+
+            for task in pending:
+                task.cancel()
+
+            return results or []
 
     @classmethod
     async def _youtube_api_search(cls, query: str, limit: int = 10) -> list[dict]:
@@ -305,6 +327,59 @@ class YouTubeHandler:
         return None
 
     @classmethod
+    async def _validate_stream_url(cls, client: httpx.AsyncClient, url: str) -> bool:
+        """Validate that the stream URL actually returns audio data (non-zero bytes)."""
+        try:
+            async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5.0) as resp:
+                if resp.status_code in [200, 206]:
+                    async for chunk in resp.aiter_bytes(chunk_size=1024):
+                        if len(chunk) > 0:
+                            return True
+                        break
+        except Exception as e:
+            logger.debug(f"Stream URL validation failed for {url[:60]}: {e}")
+        return False
+
+    @classmethod
+    async def _extract_via_cobalt_async(cls, client: httpx.AsyncClient, instance_url: str, url: str) -> Optional[str]:
+        """Fetch audio stream from Cobalt instance asynchronously and validate it."""
+        data = {
+            "url": url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3"
+        }
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Origin': 'https://cobalt.tools',
+            'Referer': 'https://cobalt.tools/'
+        }
+        try:
+            response = await client.post(instance_url, json=data, headers=headers, timeout=10.0)
+            if response.status_code == 200:
+                res_data = response.json()
+                stream_url = res_data.get("url")
+                if stream_url:
+                    if await cls._validate_stream_url(client, stream_url):
+                        cls._working_cobalt_instance = instance_url
+                        return stream_url
+            
+            # Try /api suffix just in case
+            api_url = f"{instance_url.rstrip('/')}/api"
+            response = await client.post(api_url, json=data, headers=headers, timeout=10.0)
+            if response.status_code == 200:
+                res_data = response.json()
+                stream_url = res_data.get("url")
+                if stream_url:
+                    if await cls._validate_stream_url(client, stream_url):
+                        cls._working_cobalt_instance = instance_url
+                        return stream_url
+        except Exception as e:
+            logger.debug(f"Cobalt async instance {instance_url} failed: {e}")
+        return None
+
+    @classmethod
     def _extract_via_invidious(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
         """Fetch audio stream and metadata from Invidious instances."""
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -328,6 +403,29 @@ class YouTubeHandler:
         return None
 
     @classmethod
+    async def _extract_via_invidious_async(cls, client: httpx.AsyncClient, instance: str, video_id: str) -> Optional[tuple[str, str, bool, int]]:
+        """Fetch audio stream and metadata from Invidious instance asynchronously and validate it."""
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        api_url = f"https://{instance}/api/v1/videos/{video_id}"
+        try:
+            response = await client.get(api_url, headers=headers, timeout=6.0)
+            if response.status_code == 200:
+                data = response.json()
+                title = data.get("title") or "Unknown YouTube Video"
+                is_live = data.get("liveNow", False)
+                duration = data.get("lengthSeconds", 0)
+                
+                # Construct a proxied stream URL to bypass YouTube IP restrictions (no 403 Forbidden)
+                stream_url = f"https://{instance}/latest_version?id={video_id}&itag=140&local=true"
+                if await cls._validate_stream_url(client, stream_url):
+                    cls._working_invidious_instance = instance
+                    return stream_url, title, is_live, duration
+        except Exception as e:
+            logger.debug(f"Invidious async instance {instance} failed: {e}")
+        return None
+
+
+    @classmethod
     def _extract_stream_url_fallback(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
         """Try Invidious first (proxied), then Cobalt (direct), and return (stream_url, title, is_live, duration)."""
         video_id = _extract_video_id(url)
@@ -348,6 +446,55 @@ class YouTubeHandler:
             return cobalt_stream_url, "Unknown YouTube Video", False, 0
 
         return None
+
+    @classmethod
+    async def _extract_stream_url_fallback_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+        """Try Invidious (proxied) and Cobalt (direct) concurrently and return first successful result."""
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return None
+
+        logger.info(f"Attempting concurrent fallback stream extraction for video: {video_id}")
+        
+        invidious_instances = cls._get_invidious_instances()
+        cobalt_instances = cls._get_cobalt_instances()
+        
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            tasks = []
+            
+            # Queue Invidious extraction tasks
+            for inst in invidious_instances:
+                tasks.append(asyncio.create_task(cls._extract_via_invidious_async(client, inst, video_id)))
+                
+            # Queue Cobalt extraction tasks
+            for inst in cobalt_instances:
+                async def _cobalt_task_wrapper(c, i, u):
+                    stream_url = await cls._extract_via_cobalt_async(c, i, u)
+                    if stream_url:
+                        return stream_url, "Unknown YouTube Video", False, 0
+                    return None
+                tasks.append(asyncio.create_task(_cobalt_task_wrapper(client, inst, url)))
+                
+            pending = set(tasks)
+            result = None
+            
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    try:
+                        res = task.result()
+                        if res:
+                            result = res
+                            break
+                    except Exception:
+                        pass
+                if result:
+                    break
+                    
+            for task in pending:
+                task.cancel()
+                
+            return result
 
     @classmethod
     def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
@@ -381,13 +528,71 @@ class YouTubeHandler:
         return None
 
     @classmethod
+    def _ydl_extract_stream_url_only(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+        """Extract stream URL using yt-dlp only (blocking, no fallbacks)."""
+        logger.info(f"Attempting primary stream extraction via yt-dlp only for: {url}")
+        ydl_opts = get_ydl_opts({
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+        })
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    stream_url = info.get('url')
+                    title = info.get('title', 'Unknown YouTube Video')
+                    is_live = info.get('is_live', False) or info.get('live_status') == 'is_live'
+                    duration = info.get('duration', 0)
+                    if stream_url:
+                        logger.info(f"yt-dlp stream extraction succeeded for: {url}")
+                        return stream_url, title, is_live, duration
+            except Exception as e:
+                logger.debug(f"yt-dlp extract_stream_url_only failed: {e}")
+        return None
+
+    @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Direct yt-dlp stream extraction."""
+        """Extract stream URL racing yt-dlp (executor) and concurrent fallbacks."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
+        
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, cls._ydl_extract_stream_url, url)
+        
+        # 1. Start yt-dlp extraction task in executor
+        ydl_task = loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url)
+        
+        # 2. Start concurrent fallback task
+        fallback_task = asyncio.create_task(
+            cls._extract_stream_url_fallback_async(url)
+        )
+        
+        pending = {ydl_task, fallback_task}
+        result = None
+        
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    res = task.result()
+                    if res:
+                        result = res
+                        break
+                except Exception as e:
+                    logger.debug(f"Task in extract_stream_url_async race failed: {e}")
+            if result:
+                break
+                
+        # Cancel remaining tasks
+        for task in pending:
+            task.cancel()
+            
+        if result:
+            return result
+            
+        return None
+
 
     @classmethod
     def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
@@ -439,11 +644,13 @@ class YouTubeHandler:
                                 total += len(chunk)
                                 if total > max_bytes:
                                     break
-                        if total > max_bytes:
+                        # Reject downloads that are empty or too small (less than 10 KB)
+                        if total < 10000 or total > max_bytes:
                             try:
                                 os.remove(tmp_name)
                             except Exception:
                                 pass
+                            logger.error(f"Downloaded file too small or exceeded limit: {total} bytes")
                             return None
                         return tmp_name
                     except Exception as e:
