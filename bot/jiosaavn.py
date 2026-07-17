@@ -76,7 +76,11 @@ class JioSaavnEngine:
             def _parse_autocomplete_data(data: dict) -> List[str]:
                 """Return ordered list of song PIDs from a parsed autocomplete payload."""
                 pids: List[str] = []
-                for item in data.get("topquery", {}).get("data", []):
+                topquery_dict = data.get("topquery") or {}
+                topquery_data = topquery_dict.get("data") or []
+                for item in topquery_data:
+                    if not item:
+                        continue
                     # If topquery item is a song, its PID is in item["id"] directly.
                     # If it's an album, PIDs are in more_info.song_pids.
                     if item.get("type") == "song":
@@ -84,21 +88,33 @@ class JioSaavnEngine:
                         if p and p not in pids:
                             pids.append(p)
                     else:
-                        for p in item.get("more_info", {}).get("song_pids", "").split(","):
+                        more_info = item.get("more_info") or {}
+                        for p in more_info.get("song_pids", "").split(","):
                             p = p.strip()
                             if p and p not in pids:
                                 pids.append(p)
-                for item in data.get("songs", {}).get("data", []):
+                
+                songs_dict = data.get("songs") or {}
+                songs_data = songs_dict.get("data") or []
+                for item in songs_data:
+                    if not item:
+                        continue
                     p = item.get("id", "").strip()
                     if p and p not in pids:
                         pids.append(p)
+                
+                albums_dict = data.get("albums") or {}
+                albums_data = albums_dict.get("data") or []
                 albums = sorted(
-                    data.get("albums", {}).get("data", []),
-                    key=lambda a: int(a.get("ctr", 0)),
+                    albums_data,
+                    key=lambda a: int(a.get("ctr") or 0) if a else 0,
                     reverse=True,
                 )
                 for album in albums[:3]:
-                    for p in album.get("more_info", {}).get("song_pids", "").split(","):
+                    if not album:
+                        continue
+                    more_info = album.get("more_info") or {}
+                    for p in more_info.get("song_pids", "").split(","):
                         p = p.strip()
                         if p and p not in pids:
                             pids.append(p)
@@ -190,7 +206,7 @@ class JioSaavnEngine:
 
         def _score(song: Dict[str, Any]) -> tuple:
             title = (song.get("song") or song.get("title") or "").lower()
-            plays = int(song.get("play_count", 0))
+            plays = int(song.get("play_count") or 0)
 
             is_non_original = (
                 not query_wants_remix

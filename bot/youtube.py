@@ -80,9 +80,8 @@ INVIDIOUS_INSTANCES = [
 
 # Cobalt public instances list for fallback extraction
 COBALT_INSTANCES = [
-    "https://api.cobalt.blackcat.sweeux.org",
-    "https://cobaltapi.kittycat.boo",
-    "https://rue-cobalt.xenon.zone"
+    "https://rue-cobalt.xenon.zone",
+    "https://api.cobalt.liubquanti.click"
 ]
 
 
@@ -330,7 +329,7 @@ class YouTubeHandler:
     async def _validate_stream_url(cls, client: httpx.AsyncClient, url: str) -> bool:
         """Validate that the stream URL actually returns audio data (non-zero bytes)."""
         try:
-            async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5.0) as resp:
+            async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12.0) as resp:
                 if resp.status_code in [200, 206]:
                     async for chunk in resp.aiter_bytes(chunk_size=1024):
                         if len(chunk) > 0:
