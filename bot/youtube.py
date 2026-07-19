@@ -25,6 +25,7 @@ YDL_OPTIONS = {
     'source_address': '0.0.0.0',  # Bind to IPv4 to prevent IPv6 timeout issues
     'remote_components': ['ejs:github'],
     'nocache': True,
+    'js_runtimes': {'node': {}},
 }
 
 
@@ -223,6 +224,113 @@ class YouTubeHandler:
         return []
 
     @classmethod
+    async def _scrape_search(cls, query: str, limit: int = 10) -> list[dict]:
+        """Fast YouTube search by scraping the search results page and parsing ytInitialData."""
+        from http.cookiejar import MozillaCookieJar
+        
+        logger.info(f"Attempting fast YouTube scrape search for: '{query}'")
+        
+        # Load cookies
+        cookies = None
+        cookies_paths = [
+            "cookies.txt",
+            "bot/cookies.txt",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+        ]
+        for cp in cookies_paths:
+            if os.path.exists(cp):
+                try:
+                    jar = MozillaCookieJar(cp)
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    cookies = jar
+                    logger.info(f"Loaded cookies for scrape search from: {cp}")
+                    break
+                except Exception as ce:
+                    logger.warning(f"Failed to load cookies from {cp}: {ce}")
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        
+        url = "https://www.youtube.com/results"
+        params = {"search_query": query}
+        
+        try:
+            async with httpx.AsyncClient(headers=headers, cookies=cookies, follow_redirects=True, timeout=5.0) as client:
+                response = await client.get(url, params=params)
+                if response.status_code != 200:
+                    logger.warning(f"Scrape search request failed with status: {response.status_code}")
+                    return []
+                
+                html = response.text
+                match = re.search(r"var ytInitialData\s*=\s*({.*?});", html)
+                if not match:
+                    match = re.search(r"window\[\"ytInitialData\"\]\s*=\s*({.*?});", html)
+                
+                if not match:
+                    logger.warning("Failed to find ytInitialData in scrape search response")
+                    return []
+                
+                data = json.loads(match.group(1))
+                results = []
+                
+                try:
+                    contents = data["contents"]["twoColumnSearchResultsRenderer"]["primaryContents"]["sectionListRenderer"]["contents"]
+                    for content in contents:
+                        if "itemSectionRenderer" in content:
+                            for item in content["itemSectionRenderer"]["contents"]:
+                                if "videoRenderer" in item:
+                                    vr = item["videoRenderer"]
+                                    video_id = vr.get("videoId")
+                                    if not video_id:
+                                        continue
+                                        
+                                    title = "Unknown Video"
+                                    if "title" in vr and "runs" in vr["title"] and vr["title"]["runs"]:
+                                        title = vr["title"]["runs"][0].get("text", "Unknown Video")
+                                    elif "title" in vr and "simpleText" in vr["title"]:
+                                        title = vr["title"].get("simpleText", "Unknown Video")
+                                        
+                                    uploader = "YouTube"
+                                    if "ownerText" in vr and "runs" in vr["ownerText"] and vr["ownerText"]["runs"]:
+                                        uploader = vr["ownerText"]["runs"][0].get("text", "YouTube")
+                                        
+                                    duration_sec = 0
+                                    if "lengthText" in vr and "simpleText" in vr["lengthText"]:
+                                        simple_text = vr["lengthText"]["simpleText"]
+                                        try:
+                                            parts = list(map(int, simple_text.split(':')))
+                                            if len(parts) == 2:
+                                                duration_sec = parts[0] * 60 + parts[1]
+                                            elif len(parts) == 3:
+                                                duration_sec = parts[0] * 3600 + parts[1] * 60 + parts[2]
+                                        except Exception:
+                                            pass
+                                            
+                                    results.append({
+                                        'id': video_id,
+                                        'title': title,
+                                        'song': title,
+                                        'album': uploader,
+                                        'url': f"https://www.youtube.com/watch?v={video_id}",
+                                        'duration': duration_sec,
+                                        'provider': 'youtube'
+                                    })
+                                    if len(results) >= limit:
+                                        break
+                            if len(results) >= limit:
+                                break
+                except Exception as pe:
+                    logger.warning(f"Error parsing ytInitialData in scrape search: {pe}")
+                    
+                return results
+        except Exception as e:
+            logger.error(f"Scrape search error: {e}")
+        return []
+
+    @classmethod
     async def search(cls, query: str, limit: int = 10) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
@@ -231,7 +339,12 @@ class YouTubeHandler:
                 return []
             return await cls._ydl_search(query, limit)
 
-        # Try official YouTube API search first
+        # Try fast scrape-based search first
+        scrape_results = await cls._scrape_search(query, limit)
+        if scrape_results:
+            return scrape_results
+
+        # Try official YouTube API search next
         logger.info(f"Searching YouTube via official V3 API for query: '{query}'")
         api_results = await cls._youtube_api_search(query, limit)
         if api_results:
