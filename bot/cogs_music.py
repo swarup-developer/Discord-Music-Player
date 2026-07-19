@@ -806,6 +806,18 @@ class MusicCog(commands.Cog):
             return await interaction.followup.send("This command can only be used in a server.")
         
         # Play URL natively without switching default provider
+        is_url = query.startswith("http://") or query.startswith("https://")
+        abs_path = LocalFileHandler.get_absolute_path(query)
+        is_local_file = abs_path is not None
+        
+        if not is_url and not is_local_file:
+            provider = self.state.get_provider(interaction.guild.id)
+            results = await search_songs(query, provider, limit=1)
+            if not results:
+                return await interaction.followup.send(f"No results found on {provider.capitalize()} for '{query}'")
+            song = results[0]
+            await self._play_song_data(song, interaction)
+            return
 
         session = self._session(interaction.guild.id)
         if not session.voice_client or not session.voice_client.is_connected():
@@ -1398,6 +1410,8 @@ class MusicCog(commands.Cog):
             return await interaction.followup.send(
                 "This bot is already active in another server. Leave that server's voice channel first."
             )
+        if song.startswith("http://") or song.startswith("https://"):
+            return await interaction.followup.send("Please use the `/url` command to play direct links!")
         await self._resolve_and_play(song, interaction)
 
     @discord.app_commands.command(name="url", description="Play a YouTube or direct audio stream URL")
@@ -1412,6 +1426,29 @@ class MusicCog(commands.Cog):
         if not (url.startswith("http://") or url.startswith("https://")):
             return await interaction.followup.send("Please provide a valid URL starting with http:// or https://")
         await self._resolve_and_play(url, interaction)
+
+    @discord.app_commands.command(name="stop", description="Stop music playback and clear the queue")
+    async def stop(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        await self._ensure_deferred(interaction)
+        
+        guild_id = interaction.guild.id
+        session = self._session(guild_id)
+        
+        # Clear queue
+        self.state.clear_queue(guild_id)
+        
+        # Stop playback
+        if session.voice_client:
+            session.advance_queue_on_stop = False
+            session.voice_client.stop()
+            
+        session.current_song_title = None
+        session.current_song_data = None
+        
+        await interaction.followup.send("Stopped playback and cleared the queue. ⏹️")
+        await self.refresh_controller(guild_id)
 
     @discord.app_commands.command(name="search", description="Search for songs on the active provider")
     async def search(self, interaction: discord.Interaction, query: str):
