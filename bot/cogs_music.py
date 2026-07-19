@@ -805,58 +805,7 @@ class MusicCog(commands.Cog):
         if not interaction.guild:
             return await interaction.followup.send("This command can only be used in a server.")
         
-        # Enforce provider check for playback
-        provider = self.state.get_provider(interaction.guild.id)
-        if JioSaavnHandler.is_jiosaavn_url(query) and provider == "youtube":
-            search_query = title
-            if not search_query or search_query == "Unknown":
-                search_query = query
-            await interaction.followup.send(f"Switched provider to YouTube. Searching for **{search_query}**...")
-            results = await search_songs(search_query, "youtube", limit=1)
-            if results:
-                song = results[0]
-                song["provider"] = "youtube"
-                await self._play_song_data(song, interaction)
-            else:
-                await interaction.followup.send(f"No results found on YouTube for **{search_query}**. Skipping.")
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-            return
-        if YouTubeHandler.is_youtube_url(query) and provider == "jiosaavn":
-            search_query = title
-            if not search_query or search_query == "Unknown":
-                meta = await YouTubeHandler.extract_stream_url_async(query)
-                if meta:
-                    search_query = meta[1]
-                else:
-                    search_query = query
-            await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{search_query}**...")
-            results = await search_songs(search_query, "jiosaavn", limit=1)
-            if results:
-                song = results[0]
-                song["provider"] = "jiosaavn"
-                await self._play_song_data(song, interaction)
-            else:
-                await interaction.followup.send(f"No results found on JioSaavn for **{search_query}**. Skipping.")
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-            return
-        if (JioSaavnHandler.is_jiosaavn_url(query) or YouTubeHandler.is_youtube_url(query)) and provider == "soundcloud":
-            search_query = title
-            if not search_query or search_query == "Unknown":
-                if YouTubeHandler.is_youtube_url(query):
-                    meta = await YouTubeHandler.extract_stream_url_async(query)
-                    search_query = meta[1] if meta else query
-                else:
-                    search_query = query
-            await interaction.followup.send(f"Switched provider to SoundCloud. Searching for **{search_query}**...")
-            results = await search_songs(search_query, "soundcloud", limit=1)
-            if results:
-                song = results[0]
-                song["provider"] = "soundcloud"
-                await self._play_song_data(song, interaction)
-            else:
-                await interaction.followup.send(f"No results found on SoundCloud for **{search_query}**. Skipping.")
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-            return
+        # Play URL natively without switching default provider
 
         session = self._session(interaction.guild.id)
         if not session.voice_client or not session.voice_client.is_connected():
@@ -963,58 +912,7 @@ class MusicCog(commands.Cog):
         if not interaction.guild:
             return await interaction.followup.send("This command can only be used in a server.")
         
-        # Enforce provider check for playback
-        provider = self.state.get_provider(interaction.guild.id)
-        if song.get("provider") != provider and provider != "spotify":
-            song_name = song.get("song") or song.get("title") or "Unknown Song"
-            if provider == "jiosaavn":
-                await interaction.followup.send(f"Switched provider to JioSaavn. Searching for **{song_name}**...")
-                results = await search_songs(song_name, "jiosaavn", limit=1)
-                if results:
-                    new_song = results[0]
-                    new_song["provider"] = "jiosaavn"
-                    await self._play_song_data(new_song, interaction)
-                else:
-                    await interaction.followup.send(f"No results found on JioSaavn for **{song_name}**. Skipping.")
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-                return
-            elif provider == "youtube":
-                await interaction.followup.send(f"Switched provider to YouTube. Searching for **{song_name}**...")
-                results = await search_songs(song_name, "youtube", limit=1)
-                if results:
-                    new_song = results[0]
-                    new_song["provider"] = "youtube"
-                    await self._play_song_data(new_song, interaction)
-                else:
-                    await interaction.followup.send(f"No results found on YouTube for **{song_name}**. Skipping.")
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-                return
-            elif provider == "soundcloud":
-                await interaction.followup.send(f"Switched provider to SoundCloud. Searching for **{song_name}**...")
-                results = await search_songs(song_name, "soundcloud", limit=1)
-                if results:
-                    new_song = results[0]
-                    new_song["provider"] = "soundcloud"
-                    await self._play_song_data(new_song, interaction)
-                else:
-                    await interaction.followup.send(f"No results found on SoundCloud for **{song_name}**. Skipping.")
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-                return
-            elif provider == "local":
-                await interaction.followup.send(f"Switched provider to Local Files. Searching for **{song_name}**...")
-                results = await search_songs(song_name, "local", limit=1)
-                if results:
-                    new_song = results[0]
-                    new_song["provider"] = "local"
-                    await self._play_song_data(new_song, interaction)
-                else:
-                    await interaction.followup.send(f"No local files matching **{song_name}** found. Skipping.")
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-                return
-            else:
-                await interaction.followup.send(f"Skipped **{song_name}**: belongs to {song.get('provider')} (active is {provider}).")
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(interaction.guild.id), self.bot.loop)
-                return
+        # Play song on its native provider directly
 
         session = self._session(interaction.guild.id)
         if not session.voice_client or not session.voice_client.is_connected():

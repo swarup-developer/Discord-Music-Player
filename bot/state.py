@@ -46,7 +46,8 @@ class BotState:
         self.effects: dict[int, list[str]] = {}
         self.eq_presets: dict[int, str] = {}
         self.providers: dict[int, str] = {}
-        self.settings_file = "server_settings.json"
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.settings_file = os.path.join(project_root, "server_settings.json")
         self._load_settings()
 
     def is_active_in_other_guild(self, guild_id: int) -> bool:
