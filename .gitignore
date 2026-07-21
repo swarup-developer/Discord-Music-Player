@@ -24,3 +24,7 @@ server_detail.txt
 server_settings.json
 deploy.py
 deploy_*.py
+
+# Temp debug/maintenance scripts (never commit)
+check_logs.py
+*_logs.py
