@@ -1677,7 +1677,7 @@ class MusicCog(commands.Cog):
                     logger.warning(f"Failed to disconnect existing voice client cleanly: {e}")
 
             try:
-                vc = await channel.connect(self_deaf=True, timeout=60.0, reconnect=True)
+                vc = await channel.connect(self_deaf=True, timeout=20.0, reconnect=False)
                 self.state.set_active(vc, channel.id, interaction.channel_id, guild_id)
                 self.bot.loop.create_task(self._play_startup_sound(guild_id))
                 message = f"Connected to **{channel.name}**"
