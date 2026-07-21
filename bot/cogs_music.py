@@ -793,13 +793,52 @@ class MusicCog(commands.Cog):
                         logger.error(f"Startup sound playback error: {error}")
                     session.is_playing = False
                     session.current_song_title = None
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id), self.bot.loop)
+                    # Schedule birthday sound to play 60 seconds after join sound ends
+                    asyncio.run_coroutine_threadsafe(
+                        self._schedule_birthday_sound(guild_id), self.bot.loop
+                    )
                     asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
 
                 session.voice_client.play(audio_source, after=after_startup)
                 await self.refresh_controller(guild_id)
             except Exception as e:
                 logger.error(f"Failed to play startup sound: {e}")
+
+    async def _schedule_birthday_sound(self, guild_id: int):
+        """Wait 60 seconds after the join sound, then auto-play the birthday audio."""
+        await asyncio.sleep(60)
+        session = self._session(guild_id)
+        if not session.voice_client or not session.voice_client.is_connected():
+            return
+        if session.voice_client.is_playing() or session.voice_client.is_paused():
+            return
+        birthday_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "audio", "Birthday.wav"
+        )
+        if not os.path.exists(birthday_path):
+            logger.warning(f"Birthday sound not found at: {birthday_path}")
+            return
+        try:
+            volume = self.state.get_volume(guild_id)
+            raw_source = discord.FFmpegPCMAudio(birthday_path, options="-vn")
+            audio_source = discord.PCMVolumeTransformer(raw_source, volume=volume ** 2)
+            session.is_playing = True
+            session.current_song_title = "🎂 Happy Birthday!"
+
+            def after_birthday(error):
+                if error:
+                    logger.error(f"Birthday sound playback error: {error}")
+                session.is_playing = False
+                session.current_song_title = None
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id), self.bot.loop)
+                asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+            session.voice_client.play(audio_source, after=after_birthday)
+            await self.refresh_controller(guild_id)
+            logger.info(f"Birthday sound started for guild {guild_id}")
+        except Exception as e:
+            logger.error(f"Failed to play birthday sound: {e}")
 
     async def _play_audio(self, query: str, interaction: discord.Interaction, title: Optional[str] = None):
         if not interaction.guild:
@@ -1404,9 +1443,16 @@ class MusicCog(commands.Cog):
     @discord.app_commands.command(name="play", description="Play a song immediately or enqueue it")
     async def play(self, interaction: discord.Interaction, song: str):
         await self._ensure_deferred(interaction)
+        if not interaction.guild:
+            return await interaction.followup.send("This command can only be used in a server.")
+        # Provider is disabled — silently think but do nothing
+        provider = self.state.get_provider(interaction.guild.id)
+        if provider == "none":
+            await interaction.followup.send("🤔 Thinking...")
+            return
         if not self._should_respond(interaction):
             return await interaction.followup.send("Join a voice channel first!")
-        if interaction.guild and self.state.is_active_in_other_guild(interaction.guild.id):
+        if self.state.is_active_in_other_guild(interaction.guild.id):
             return await interaction.followup.send(
                 "This bot is already active in another server. Leave that server's voice channel first."
             )
@@ -1482,17 +1528,12 @@ class MusicCog(commands.Cog):
             view=self.SearchResultsView(self, interaction, results),
         )
 
-    @discord.app_commands.command(name="provider", description="Set the default music provider (YouTube / JioSaavn / SoundCloud / Spotify / Local Files)")
+    @discord.app_commands.command(name="provider", description="Set the default music provider")
     async def provider_cmd(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("Server only.", ephemeral=True)
-        await self._ensure_deferred(interaction)
-        
-        current = self.state.get_provider(interaction.guild.id)
-        view = ProviderSelectionView(self.state, interaction.guild.id)
-        await interaction.followup.send(
-            content=f"Select your default music provider (Current: **{current.capitalize()}**):",
-            view=view
+        await interaction.response.send_message(
+            "⚠️ This feature is currently unavailable.", ephemeral=True
         )
 
     @discord.app_commands.command(name="queue", description="Show the music queue with pagination")
