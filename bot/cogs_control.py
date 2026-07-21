@@ -88,26 +88,7 @@ class ControlCog(commands.Cog):
         else:
             await interaction.response.send_message("Nothing is paused.")
 
-    @discord.app_commands.command(name="stop", description="Stop playback")
-    async def stop(self, interaction: discord.Interaction):
-        if interaction.guild and self.state.is_active_in_other_guild(interaction.guild.id):
-            return await interaction.response.send_message(
-                "This bot is already active in another server. Leave that server's voice channel first.",
-                ephemeral=True,
-            )
-        if not interaction.guild:
-            return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-        session = self.state.session_for(interaction.guild.id)
-        if session.voice_client and (session.voice_client.is_playing() or session.voice_client.is_paused()):
-            session.advance_queue_on_stop = False
-            session.voice_client.stop()
-            self.state.clear_queue(interaction.guild.id)
-            session.start_time = 0.0
-            session.paused_duration = 0.0
-            session.last_paused_at = None
-            await interaction.response.send_message("Stopped.")
-        else:
-            await interaction.response.send_message("Nothing is playing.")
+
 
     @discord.app_commands.command(name="go", description="Leave voice channel")
     async def go(self, interaction: discord.Interaction):
