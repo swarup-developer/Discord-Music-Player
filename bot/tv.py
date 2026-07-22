@@ -222,8 +222,10 @@ class IPTVManager:
     @classmethod
     async def load_channels(cls, force_refresh: bool = False) -> None:
         if cls._is_loading:
-            while cls._is_loading:
+            wait_count = 0
+            while cls._is_loading and wait_count < 10:
                 await asyncio.sleep(0.5)
+                wait_count += 1
             return
 
         cls._is_loading = True
@@ -238,11 +240,8 @@ class IPTVManager:
                             if data:
                                 cls._channels = data
                                 cls._rebuild_indices()
-                                # Verify if India channels are indexed in cache
-                                if cls._channels_by_country.get("in"):
-                                    logger.info(f"Loaded {len(cls._channels)} IPTV channels (including India) from local cache.")
-                                    cls._is_loading = False
-                                    return
+                                logger.info(f"Loaded {len(cls._channels)} IPTV channels from local cache.")
+                                return
                     except Exception as e:
                         logger.error(f"Failed to read IPTV cache: {e}")
 
