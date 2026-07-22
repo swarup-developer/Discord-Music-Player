@@ -622,15 +622,19 @@ class MusicCog(commands.Cog):
         
         title = session.current_song_title or "Nothing playing"
         status = "Playing" if session.is_playing else "Paused" if session.voice_client and session.voice_client.is_paused() else "Idle"
-        embed = discord.Embed(title="Playback Controller", color=discord.Color.green())
-        embed.add_field(name="Song", value=title, inline=False)
-        embed.add_field(name="Status", value=status, inline=True)
-        embed.add_field(name="Volume", value=f"{int(volume * 100)}%", inline=True)
-        embed.add_field(name="Queue", value=f"{len(queue)} queued", inline=True)
-        embed.add_field(name="Loop", value=loop_str, inline=True)
-        embed.add_field(name="Shuffle", value="On" if shuffle else "Off", inline=True)
-        embed.add_field(name="Effects", value=effects_str, inline=True)
-        embed.add_field(name="EQ Preset", value=eq_str, inline=True)
+        
+        description = (
+            f"🎵 **Playback Controller**\n\n"
+            f"• **Song:** {title}\n"
+            f"• **Status:** {status}\n"
+            f"• **Volume:** {int(volume * 100)}%\n"
+            f"• **Queue:** {len(queue)} queued\n"
+            f"• **Loop:** {loop_str}\n"
+            f"• **Shuffle:** {'On' if shuffle else 'Off'}\n"
+            f"• **Effects:** {effects_str}\n"
+            f"• **EQ Preset:** {eq_str}"
+        )
+        embed = discord.Embed(description=description, color=discord.Color.green())
         return embed
 
     async def refresh_controller(self, guild_id: int) -> None:
