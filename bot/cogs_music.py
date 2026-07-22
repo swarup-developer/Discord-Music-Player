@@ -400,7 +400,24 @@ class MusicCog(commands.Cog):
             title = self.cog._session(self.guild_id).current_song_title or "Nothing playing"
             return title
 
-        @discord.ui.button(label="Pause", style=discord.ButtonStyle.primary, row=0)
+        @discord.ui.button(label="Prev", emoji="⏮️", style=discord.ButtonStyle.secondary, row=0)
+        async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.guild:
+                return await interaction.response.send_message("Server only.", ephemeral=True)
+            session = self.cog._session(interaction.guild.id)
+            if not session.history:
+                return await interaction.response.send_message("No previous track available.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            await self.cog.play_previous(interaction.guild.id, interaction)
+
+        @discord.ui.button(label="-10s", emoji="⏪", style=discord.ButtonStyle.secondary, row=0)
+        async def rewind(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.guild:
+                return await interaction.response.send_message("Server only.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            await self.cog.seek_relative(interaction.guild.id, -10.0, interaction)
+
+        @discord.ui.button(label="Pause", emoji="⏯️", style=discord.ButtonStyle.primary, row=0)
         async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
             session = self.cog._session(self.guild_id)
             vc = session.voice_client
@@ -422,7 +439,6 @@ class MusicCog(commands.Cog):
                 button.label = "Pause"
                 button.style = discord.ButtonStyle.danger
             else:
-                # Stopped/idle. Try to play next in queue if available
                 queue = self.cog.state.queue_for(self.guild_id)
                 if queue:
                     await self.cog._play_next_in_queue(self.guild_id)
@@ -431,17 +447,14 @@ class MusicCog(commands.Cog):
                     return
             await self.cog.refresh_controller(interaction.guild.id if interaction.guild else self.guild_id)
 
-        @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, row=0)
-        async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        @discord.ui.button(label="+10s", emoji="⏩", style=discord.ButtonStyle.secondary, row=0)
+        async def forward(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
-            session = self.cog._session(interaction.guild.id)
-            if not session.history:
-                return await interaction.response.send_message("No previous track available.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
-            await self.cog.play_previous(interaction.guild.id, interaction)
+            await self.cog.seek_relative(interaction.guild.id, 10.0, interaction)
 
-        @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=0)
+        @discord.ui.button(label="Next", emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
         async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -452,7 +465,7 @@ class MusicCog(commands.Cog):
             self.cog._session(interaction.guild.id).advance_queue_on_stop = True
             vc.stop()
 
-        @discord.ui.button(label="Repeat", style=discord.ButtonStyle.success, row=1)
+        @discord.ui.button(label="Loop", emoji="🔁", style=discord.ButtonStyle.success, row=1)
         async def repeat(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -467,7 +480,7 @@ class MusicCog(commands.Cog):
             self.cog.state.set_loop_mode(interaction.guild.id, next_mode)
             await self.cog.refresh_controller(interaction.guild.id)
 
-        @discord.ui.button(label="Shuffle", style=discord.ButtonStyle.secondary, row=1)
+        @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
         async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -480,7 +493,15 @@ class MusicCog(commands.Cog):
             button.style = discord.ButtonStyle.success if enabled else discord.ButtonStyle.secondary
             await self.cog.refresh_controller(interaction.guild.id)
 
-        @discord.ui.button(label="-", style=discord.ButtonStyle.secondary, row=1)
+        @discord.ui.button(label="Clear Queue", emoji="🗑️", style=discord.ButtonStyle.danger, row=1)
+        async def clear_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.guild:
+                return await interaction.response.send_message("Server only.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            self.cog.state.clear_queue(interaction.guild.id)
+            await self.cog.refresh_controller(interaction.guild.id)
+
+        @discord.ui.button(label="-", emoji="🔉", style=discord.ButtonStyle.secondary, row=1)
         async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -490,7 +511,7 @@ class MusicCog(commands.Cog):
             self.cog.sync_voice_volume(interaction.guild.id, new_volume)
             await self.cog.refresh_controller(interaction.guild.id)
 
-        @discord.ui.button(label="+", style=discord.ButtonStyle.secondary, row=1)
+        @discord.ui.button(label="+", emoji="🔊", style=discord.ButtonStyle.secondary, row=1)
         async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -1157,6 +1178,87 @@ class MusicCog(commands.Cog):
             session.is_playing = True
             session.current_song_title = title
             asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+    async def seek_relative(self, guild_id: int, offset_seconds: float, interaction: Optional[discord.Interaction] = None):
+        session = self._session(guild_id)
+        if not session.current_song_data or not session.voice_client or not session.voice_client.is_connected():
+            return
+        
+        elapsed = 0.0
+        if session.start_time > 0:
+            paused = session.paused_duration or 0.0
+            if session.last_paused_at:
+                paused += time.time() - session.last_paused_at
+            elapsed = time.time() - session.start_time - paused
+            elapsed = max(0.0, elapsed)
+            
+        target_time = max(0.0, elapsed + offset_seconds)
+        
+        current_data = session.current_song_data
+        session.current_song_data = None
+        session.advance_queue_on_stop = False
+        if session.voice_client:
+            session.voice_client.stop()
+            
+        await asyncio.sleep(0.3)
+
+        volume = self.state.get_volume(guild_id)
+        effects = self.state.get_effects(guild_id)
+        eq_preset = self.state.get_eq_preset(guild_id)
+
+        if current_data["type"] == "query":
+            audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
+        else:
+            audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
+
+        if not audio_source:
+            logger.warning(f"seek_relative: failed to get audio source for guild {guild_id}")
+            return
+
+        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
+        
+        src = audio_source
+        while hasattr(src, "original"):
+            src = src.original
+        session.temp_file_path = getattr(src, "temp_file_path", None)
+        session.start_time = time.time() - target_time
+        session.paused_duration = 0.0
+        session.last_paused_at = None
+        session.current_song_data = current_data
+
+        def after_seek(error):
+            if error:
+                logger.error(f"Seek playback error: {error}")
+            session.is_playing = False
+            session.current_song_title = None
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
+            if session.temp_file_path:
+                try:
+                    if os.path.exists(session.temp_file_path):
+                        os.remove(session.temp_file_path)
+                except Exception:
+                    pass
+                session.temp_file_path = None
+            
+            old_data = session.current_song_data
+            if old_data:
+                if not session.history or session.history[-1] != old_data:
+                    session.history.append(old_data)
+                    if len(session.history) > 20:
+                        session.history.pop(0)
+                session.current_song_data = None
+
+            if session.advance_queue_on_stop:
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
+            session.advance_queue_on_stop = True
+            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+        session.voice_client.play(audio_source, after=after_seek)
+        session.is_playing = True
+        session.current_song_title = title
+        await self.refresh_controller(guild_id)
 
     async def _cleanup_if_empty(self, guild: discord.Guild) -> None:
         voice_client = guild.voice_client
