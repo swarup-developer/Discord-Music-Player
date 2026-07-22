@@ -783,13 +783,16 @@ class YouTubeHandler:
                     return None, None
                 stream_url, title, is_live, duration = meta
                 
-                # Download stream to temporary local file to prevent buffering lag
+                # Download stream to temporary local file to prevent buffering lag, or fall back to direct stream
                 temp_path = await cls._download_stream_to_tempfile(stream_url)
-                if not temp_path:
-                    return None, None
+                if temp_path:
+                    source_path = temp_path
+                    ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                else:
+                    logger.info("Tempfile download failed or timed out. Streaming YouTube URL directly via FFmpeg.")
+                    source_path = stream_url
+                    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
                 
-                source_path = temp_path
-                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
                 if seek and seek > 0:
                     ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
                 
@@ -841,13 +844,16 @@ class YouTubeHandler:
             
             stream_url, title, is_live, duration = meta
             
-            # Download stream to temporary local file to prevent buffering lag
+            # Download stream to temporary local file to prevent buffering lag, or fall back to direct stream
             temp_path = await cls._download_stream_to_tempfile(stream_url)
-            if not temp_path:
-                return None, None
+            if temp_path:
+                source_path = temp_path
+                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+            else:
+                logger.info("Tempfile download failed or timed out. Streaming YouTube URL directly via FFmpeg.")
+                source_path = stream_url
+                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
                 
-            source_path = temp_path
-            ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             

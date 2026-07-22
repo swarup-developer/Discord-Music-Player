@@ -130,7 +130,7 @@ class BotState:
         return res
 
     def get_provider(self, guild_id: int) -> str:
-        return self.providers.get(guild_id, "none")
+        return self.providers.get(guild_id, "jiosaavn")
 
     def set_provider(self, guild_id: int, provider: str) -> None:
         self.providers[guild_id] = provider
@@ -175,7 +175,7 @@ class BotState:
                     "volume": self.volume_by_guild.get(guild_id, 0.45),
                     "loop_mode": self.loop_modes.get(guild_id, "off"),
                     "effects": self.effects.get(guild_id, []),
-                    "provider": self.providers.get(guild_id, "none"),
+                    "provider": self.providers.get(guild_id, "jiosaavn"),
                     "eq_preset": self.eq_presets.get(guild_id, "off")
                 }
             with open(self.settings_file, "w", encoding="utf-8") as f:
