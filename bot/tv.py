@@ -169,6 +169,16 @@ VERIFIED_INDIAN_CHANNELS = [
         "geo_blocked": False
     },
     {
+        "name": "9XM Music 🇮🇳",
+        "url": "https://9xjio.wiseplayout.com/9XM/master.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "9XM.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
         "name": "9X Jalwa 🇮🇳",
         "url": "https://b.jsrdn.com/strm/channels/9xjalwa/master.m3u8",
         "category": "Music",
@@ -179,32 +189,32 @@ VERIFIED_INDIAN_CHANNELS = [
         "geo_blocked": False
     },
     {
-        "name": "9X Jhakaas 🇮🇳",
-        "url": "https://amg01281-9xmediapvtltd-9xjhakaas-samsungin-ci2cs.amagi.tv/play/playlist.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Marathi",
-        "tvg_id": "9XJhakaas.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "9X Tashan 🇮🇳",
-        "url": "https://amg01281-9xmediapvtltd-9xtashan-samsungin-xz1sd.amagi.tv/playlist.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Punjabi",
-        "tvg_id": "9XTashan.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
         "name": "10TV Telugu News 🇮🇳",
         "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
         "category": "News",
         "country_code": "in",
         "language": "Telugu",
         "tvg_id": "10TV.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "24 Malayalam News 🇮🇳",
+        "url": "https://mumt07.tangotv.in/zHjX9OFlTWENTYFOURNEWS/index.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Malayalam",
+        "tvg_id": "24News.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "Aastha Bhajan 🇮🇳",
+        "url": "https://mumt05.tangotv.in/87NeALx2AASTHABHAJAN/index.m3u8",
+        "category": "Religious",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "AasthaBhajan.in",
         "logo": "",
         "geo_blocked": False
     }
