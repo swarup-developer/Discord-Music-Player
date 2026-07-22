@@ -1394,13 +1394,8 @@ class MusicCog(commands.Cog):
             title = song.get("song") or song.get("title") or "Unknown"
             if provider == "jiosaavn":
                 title = JioSaavnHandler.engine.format_string(title)
-            song_query = song.get("url") or song.get("id") or query
             
-            if session.voice_client and session.voice_client.is_connected() and (session.voice_client.is_playing() or session.voice_client.is_paused()):
-                queue.append(QueueItem(query=song_query, title=title, requested_by=interaction.user.id))
-                return await interaction.followup.send(f"Queued: **{title}**")
-            else:
-                await self._play_song_data(song, interaction)
+            await self._play_song_data(song, interaction)
 
     @discord.app_commands.command(name="play", description="Play a song immediately or enqueue it")
     async def play(self, interaction: discord.Interaction, song: str):
