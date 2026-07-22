@@ -11,13 +11,14 @@ This is a personal, open-source project. I have no official association with Goo
 
 ## 🚀 Key Features
 *   **Instant Playback**: Plays music in your voice channel immediately without buffering lags.
-*   **YouTube Bypass**: Integrates a local PO Token server to help prevent YouTube from blocking your server's IP address.
+*   **Full Screen Reader & Mobile Accessibility**: Designed with clean, sequential top-to-bottom text readouts and emoji-free button labels. Fully accessible for PC screen readers (NVDA, JAWS, Windows Narrator) and mobile devices (Apple VoiceOver, Android TalkBack).
+*   **YouTube Bypass**: Integrates a local PO Token server and fast fallback proxy tunnels to prevent YouTube from blocking your server's IP address.
 *   **Challenge Solver**: Automatically solves YouTube's signature challenges in the background using Deno.
-*   **Interactive Control Board**: Sends a clean message with play, pause, skip, filter, and volume buttons so you don't have to type commands every time.
+*   **Interactive Control Board**: Clean, accessible Playback Controller with play, pause, rewind (-10s), forward (+10s), skip, clear queue, filter, and volume controls.
 *   **Fast Dependencies**: Managed with uv for lightning-fast installation and updates.
 *   **Startup Sound**: Plays a customizable audio file when the bot joins a voice channel.
 *   **Live TV & Radio**: Browse and stream live television feeds (by language or country selection) and pre-configured internet radio stations.
-*   **Custom Default Providers**: Set YouTube, JioSaavn, SoundCloud, Spotify, or Local Files as the default music search/playback provider.
+*   **Custom Default Providers**: Set JioSaavn, YouTube, SoundCloud, Spotify, or Local Files as the default music search/playback provider.
 
 ### 🎵 Startup Sound
 You can set up a custom sound to play immediately whenever the bot joins a voice channel:
