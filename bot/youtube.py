@@ -664,21 +664,29 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Extract stream URL using primary yt-dlp (with cookies). Fall back to public APIs ONLY if yt-dlp fails."""
+        """Extract stream URL using primary yt-dlp (with cookies) up to 3.0s. Fall back to public APIs if yt-dlp fails or times out."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
         
         loop = asyncio.get_event_loop()
         
-        # 1. Try primary yt-dlp extraction with cookies first
-        res = await loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url)
-        if res:
-            logger.info("Primary yt-dlp stream extraction succeeded with cookies.")
-            return res
+        # 1. Try primary yt-dlp extraction with cookies (with a 3.0s timeout to prevent hanging when cookies fail)
+        try:
+            res = await asyncio.wait_for(
+                loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url),
+                timeout=3.0
+            )
+            if res:
+                logger.info("Primary yt-dlp stream extraction succeeded with cookies.")
+                return res
+        except asyncio.TimeoutError:
+            logger.warning("Primary yt-dlp stream extraction timed out (>3.0s). Switching to fast public API fallbacks...")
+        except Exception as e:
+            logger.debug(f"Primary yt-dlp stream extraction failed: {e}")
         
-        # 2. Only if yt-dlp fails, attempt fallback stream extraction
-        logger.info("Primary yt-dlp extraction failed. Attempting fallback stream extraction...")
+        # 2. Only if yt-dlp fails or times out, attempt fallback stream extraction
+        logger.info("Attempting fallback stream extraction...")
         return await cls._extract_stream_url_fallback_async(url)
 
 
