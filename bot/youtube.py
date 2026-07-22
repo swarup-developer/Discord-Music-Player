@@ -664,30 +664,47 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Extract stream URL using primary yt-dlp (with cookies) up to 3.0s. Fall back to public APIs if yt-dlp fails or times out."""
+        """Extract stream URL concurrently racing yt-dlp (with cookies) and fast public fallbacks for sub-second response times."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
         
         loop = asyncio.get_event_loop()
         
-        # 1. Try primary yt-dlp extraction with cookies (with a 3.0s timeout to prevent hanging when cookies fail)
-        try:
-            res = await asyncio.wait_for(
-                loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url),
-                timeout=3.0
-            )
-            if res:
-                logger.info("Primary yt-dlp stream extraction succeeded with cookies.")
-                return res
-        except asyncio.TimeoutError:
-            logger.warning("Primary yt-dlp stream extraction timed out (>3.0s). Switching to fast public API fallbacks...")
-        except Exception as e:
-            logger.debug(f"Primary yt-dlp stream extraction failed: {e}")
+        # 1. Start primary yt-dlp extraction with 1.5s cap
+        async def _yt_dlp_task():
+            try:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url),
+                    timeout=1.5
+                )
+            except Exception:
+                return None
+
+        # 2. Start fallback extraction concurrently
+        ydl_task = asyncio.create_task(_yt_dlp_task())
+        fallback_task = asyncio.create_task(cls._extract_stream_url_fallback_async(url))
         
-        # 2. Only if yt-dlp fails or times out, attempt fallback stream extraction
-        logger.info("Attempting fallback stream extraction...")
-        return await cls._extract_stream_url_fallback_async(url)
+        pending = {ydl_task, fallback_task}
+        result = None
+        
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    res = task.result()
+                    if res:
+                        result = res
+                        break
+                except Exception:
+                    pass
+            if result:
+                break
+                
+        for task in pending:
+            task.cancel()
+            
+        return result
 
 
     @classmethod
@@ -768,15 +785,8 @@ class YouTubeHandler:
                     return None, None
                 stream_url, title, is_live, duration = meta
                 
-                # Download stream to temporary local file to prevent buffering lag, or fall back to direct stream
-                temp_path = await cls._download_stream_to_tempfile(stream_url)
-                if temp_path:
-                    source_path = temp_path
-                    ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                else:
-                    logger.info("Tempfile download failed or timed out. Streaming YouTube URL directly via FFmpeg.")
-                    source_path = stream_url
-                    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                source_path = stream_url
+                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -nostdin -probesize 32768 -analyzeduration 0 -fflags nobuffer"
                 
                 if seek and seek > 0:
                     ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
@@ -804,7 +814,7 @@ class YouTubeHandler:
                 ffmpeg_options += f' -af "{",".join(filters)}"'
                 
                 source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                source.temp_file_path = temp_path
+                source.temp_file_path = None
                 return source, title
             else:
                 results = await cls.search(query, limit=1)
@@ -822,22 +832,14 @@ class YouTubeHandler:
             if not url:
                 return None, None
             
-            # Use the async Piped-first extraction
             meta = await cls.extract_stream_url_async(url)
             if not meta:
                 return None, None
             
             stream_url, title, is_live, duration = meta
             
-            # Download stream to temporary local file to prevent buffering lag, or fall back to direct stream
-            temp_path = await cls._download_stream_to_tempfile(stream_url)
-            if temp_path:
-                source_path = temp_path
-                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-            else:
-                logger.info("Tempfile download failed or timed out. Streaming YouTube URL directly via FFmpeg.")
-                source_path = stream_url
-                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+            source_path = stream_url
+            ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -nostdin -probesize 32768 -analyzeduration 0 -fflags nobuffer"
                 
             if seek and seek > 0:
                 ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
@@ -862,12 +864,11 @@ class YouTubeHandler:
                 if "nightcore" in effects:
                     filters.append("asetrate=48000*1.25")
             
-            # Use high-quality soxr resampling to convert back to 48kHz PCM
             filters.append("aresample=osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
             source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-            source.temp_file_path = temp_path
+            source.temp_file_path = None
             return source, title
         except Exception as e:
             logger.error(f"YouTube get_audio_source_for_song error: {e}")
