@@ -157,6 +157,59 @@ class IPTVManager:
                 countries_with_names.append(code.upper())
         return sorted(countries_with_names)
 
+VERIFIED_INDIAN_CHANNELS = [
+    {
+        "name": "Aaj Tak HD 🇮🇳",
+        "url": "https://feeds.intoday.in/aajtak/api/aajtakhd/master.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "AajTak.in",
+        "logo": "https://i.imgur.com/aajtak.png",
+        "geo_blocked": False
+    },
+    {
+        "name": "9X Jalwa 🇮🇳",
+        "url": "https://b.jsrdn.com/strm/channels/9xjalwa/master.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "9XJalwa.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "9X Jhakaas 🇮🇳",
+        "url": "https://amg01281-9xmediapvtltd-9xjhakaas-samsungin-ci2cs.amagi.tv/play/playlist.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Marathi",
+        "tvg_id": "9XJhakaas.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "9X Tashan 🇮🇳",
+        "url": "https://amg01281-9xmediapvtltd-9xtashan-samsungin-xz1sd.amagi.tv/playlist.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Punjabi",
+        "tvg_id": "9XTashan.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "10TV Telugu News 🇮🇳",
+        "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Telugu",
+        "tvg_id": "10TV.in",
+        "logo": "",
+        "geo_blocked": False
+    }
+]
+
     @classmethod
     async def load_channels(cls, force_refresh: bool = False) -> None:
         if cls._is_loading:
@@ -176,9 +229,11 @@ class IPTVManager:
                             if data:
                                 cls._channels = data
                                 cls._rebuild_indices()
-                                logger.info(f"Loaded {len(cls._channels)} IPTV channels from local cache.")
-                                cls._is_loading = False
-                                return
+                                # Verify if India channels are indexed in cache
+                                if cls._channels_by_country.get("in"):
+                                    logger.info(f"Loaded {len(cls._channels)} IPTV channels (including India) from local cache.")
+                                    cls._is_loading = False
+                                    return
                     except Exception as e:
                         logger.error(f"Failed to read IPTV cache: {e}")
 
@@ -201,17 +256,32 @@ class IPTVManager:
                         for ch in cat_channels:
                             if ch["url"] in url_map:
                                 url_map[ch["url"]]["category"] = ch.get("category", "General")
-                                
-                    cls._rebuild_indices()
-                    # Write to cache
-                    try:
-                        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                            json.dump(cls._channels, f, indent=4)
-                        logger.info("Saved IPTV channels to local cache.")
-                    except Exception as e:
-                        logger.error(f"Failed to save IPTV cache: {e}")
-                else:
-                    logger.error(f"Failed to fetch IPTV index. Status code: {response_lang.status_code}")
+
+                # Fetch India-specific IPTV playlist directly
+                try:
+                    logger.info("Fetching Indian IPTV channels from iptv-org...")
+                    response_in = await client.get("https://iptv-org.github.io/iptv/countries/in.m3u", timeout=15.0)
+                    if response_in.status_code == 200:
+                        in_channels = cls._parse_m3u(response_in.text, is_lang=False)
+                        for ch in in_channels:
+                            ch["country_code"] = "in"
+                            if not ch.get("language"):
+                                ch["language"] = "Hindi"
+                        existing_urls = {ch["url"] for ch in cls._channels}
+                        new_in_channels = [ch for ch in in_channels if ch["url"] not in existing_urls]
+                        cls._channels = VERIFIED_INDIAN_CHANNELS + new_in_channels + cls._channels
+                        logger.info(f"Loaded {len(in_channels)} specific Indian IPTV channels.")
+                except Exception as ie:
+                    logger.warning(f"Failed to fetch India IPTV playlist: {ie}")
+                    
+                cls._rebuild_indices()
+                # Write to cache
+                try:
+                    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                        json.dump(cls._channels, f, indent=4)
+                    logger.info("Saved IPTV channels to local cache.")
+                except Exception as e:
+                    logger.error(f"Failed to save IPTV cache: {e}")
         except Exception as e:
             logger.error(f"Error loading IPTV channels: {e}")
         finally:
