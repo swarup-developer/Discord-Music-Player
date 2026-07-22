@@ -72,7 +72,68 @@ COUNTRY_CODES = {
 }
 
 # Reverse mapping for easy lookup
-COUNTRY_NAME_TO_CODE = {v.lower(): k for k, v in COUNTRY_CODES.items()}
+VERIFIED_INDIAN_CHANNELS = [
+    {
+        "name": "Aaj Tak HD 🇮🇳",
+        "url": "https://feeds.intoday.in/aajtak/api/aajtakhd/master.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "AajTak.in",
+        "logo": "https://i.imgur.com/aajtak.png",
+        "geo_blocked": False
+    },
+    {
+        "name": "9XM Music 🇮🇳",
+        "url": "https://9xjio.wiseplayout.com/9XM/master.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "9XM.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "9X Jalwa 🇮🇳",
+        "url": "https://b.jsrdn.com/strm/channels/9xjalwa/master.m3u8",
+        "category": "Music",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "9XJalwa.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "10TV Telugu News 🇮🇳",
+        "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Telugu",
+        "tvg_id": "10TV.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "24 Malayalam News 🇮🇳",
+        "url": "https://mumt07.tangotv.in/zHjX9OFlTWENTYFOURNEWS/index.m3u8",
+        "category": "News",
+        "country_code": "in",
+        "language": "Malayalam",
+        "tvg_id": "24News.in",
+        "logo": "",
+        "geo_blocked": False
+    },
+    {
+        "name": "Aastha Bhajan 🇮🇳",
+        "url": "https://mumt05.tangotv.in/87NeALx2AASTHABHAJAN/index.m3u8",
+        "category": "Religious",
+        "country_code": "in",
+        "language": "Hindi",
+        "tvg_id": "AasthaBhajan.in",
+        "logo": "",
+        "geo_blocked": False
+    }
+]
 
 class IPTVManager:
     _channels: List[Dict[str, Any]] = []
@@ -157,68 +218,6 @@ class IPTVManager:
                 countries_with_names.append(code.upper())
         return sorted(countries_with_names)
 
-VERIFIED_INDIAN_CHANNELS = [
-    {
-        "name": "Aaj Tak HD 🇮🇳",
-        "url": "https://feeds.intoday.in/aajtak/api/aajtakhd/master.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "AajTak.in",
-        "logo": "https://i.imgur.com/aajtak.png",
-        "geo_blocked": False
-    },
-    {
-        "name": "9XM Music 🇮🇳",
-        "url": "https://9xjio.wiseplayout.com/9XM/master.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "9XM.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "9X Jalwa 🇮🇳",
-        "url": "https://b.jsrdn.com/strm/channels/9xjalwa/master.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "9XJalwa.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "10TV Telugu News 🇮🇳",
-        "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Telugu",
-        "tvg_id": "10TV.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "24 Malayalam News 🇮🇳",
-        "url": "https://mumt07.tangotv.in/zHjX9OFlTWENTYFOURNEWS/index.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Malayalam",
-        "tvg_id": "24News.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "Aastha Bhajan 🇮🇳",
-        "url": "https://mumt05.tangotv.in/87NeALx2AASTHABHAJAN/index.m3u8",
-        "category": "Religious",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "AasthaBhajan.in",
-        "logo": "",
-        "geo_blocked": False
-    }
-]
 
     @classmethod
     async def load_channels(cls, force_refresh: bool = False) -> None:
