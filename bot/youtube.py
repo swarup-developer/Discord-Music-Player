@@ -785,12 +785,6 @@ class YouTubeHandler:
                     return None, None
                 stream_url, title, is_live, duration = meta
                 
-                source_path = stream_url
-                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -nostdin -probesize 32768 -analyzeduration 0 -fflags nobuffer"
-                
-                if seek and seek > 0:
-                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                
                 ffmpeg_options = "-vn -flags low_delay"
                 filters = []
                 if eq_preset:
@@ -812,10 +806,26 @@ class YouTubeHandler:
                         filters.append("asetrate=48000*1.25")
                 filters.append("aresample=osr=48000:osf=s16")
                 ffmpeg_options += f' -af "{",".join(filters)}"'
-                
-                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                source.temp_file_path = None
-                return source, title
+
+                try:
+                    source_path = stream_url
+                    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\" -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                    if seek and seek > 0:
+                        ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+                    source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                    source.temp_file_path = None
+                    return source, title
+                except Exception as fe:
+                    logger.warning(f"Direct stream creation failed: {fe}. Falling back to tempfile download...")
+                    temp_path = await cls._download_stream_to_tempfile(stream_url)
+                    if temp_path:
+                        ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                        if seek and seek > 0:
+                            ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+                        source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                        source.temp_file_path = temp_path
+                        return source, title
+                    return None, None
             else:
                 results = await cls.search(query, limit=1)
                 if not results:
@@ -837,12 +847,6 @@ class YouTubeHandler:
                 return None, None
             
             stream_url, title, is_live, duration = meta
-            
-            source_path = stream_url
-            ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -nostdin -probesize 32768 -analyzeduration 0 -fflags nobuffer"
-                
-            if seek and seek > 0:
-                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
             
             ffmpeg_options = "-vn -flags low_delay"
             filters = []
@@ -867,9 +871,25 @@ class YouTubeHandler:
             filters.append("aresample=osr=48000:osf=s16")
             ffmpeg_options += f' -af "{",".join(filters)}"'
 
-            source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-            source.temp_file_path = None
-            return source, title
+            try:
+                source_path = stream_url
+                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\" -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                if seek and seek > 0:
+                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                source.temp_file_path = None
+                return source, title
+            except Exception as fe:
+                logger.warning(f"Direct stream creation failed: {fe}. Falling back to tempfile download...")
+                temp_path = await cls._download_stream_to_tempfile(stream_url)
+                if temp_path:
+                    ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+                    if seek and seek > 0:
+                        ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+                    source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                    source.temp_file_path = temp_path
+                    return source, title
+                return None, None
         except Exception as e:
             logger.error(f"YouTube get_audio_source_for_song error: {e}")
             return None, None

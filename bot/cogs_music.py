@@ -621,23 +621,13 @@ class MusicCog(commands.Cog):
         if channel is None:
             return
         message_id = self.state.controller_message_id.get(guild_id)
-        view = self.MusicControllerView(self, guild_id)
-        # Hide shuffle when there is no playlist-like queue.
-        if len(self.state.queue_for(guild_id)) < 2:
-            for item in list(view.children):
-                if getattr(item, "label", None) == "Shuffle":
-                    item.disabled = True
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
                 await message.delete()
+                self.state.controller_message_id.pop(guild_id, None)
             except Exception:
                 pass
-        try:
-            message = await channel.send(embed=self._controller_embed(guild_id), view=view)
-            self.state.controller_message_id[guild_id] = message.id
-        except Exception as e:
-            logger.warning(f"Failed to publish controller: {e}")
 
     async def _ensure_deferred(self, interaction: discord.Interaction, *, ephemeral: bool = False) -> None:
         if interaction.response.is_done():
