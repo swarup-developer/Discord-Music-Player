@@ -664,45 +664,22 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Extract stream URL racing yt-dlp (executor) and concurrent fallbacks."""
+        """Extract stream URL using primary yt-dlp (with cookies). Fall back to public APIs ONLY if yt-dlp fails."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
         
         loop = asyncio.get_event_loop()
         
-        # 1. Start yt-dlp extraction task in executor
-        ydl_task = loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url)
+        # 1. Try primary yt-dlp extraction with cookies first
+        res = await loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url)
+        if res:
+            logger.info("Primary yt-dlp stream extraction succeeded with cookies.")
+            return res
         
-        # 2. Start concurrent fallback task
-        fallback_task = asyncio.create_task(
-            cls._extract_stream_url_fallback_async(url)
-        )
-        
-        pending = {ydl_task, fallback_task}
-        result = None
-        
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                try:
-                    res = task.result()
-                    if res:
-                        result = res
-                        break
-                except Exception as e:
-                    logger.debug(f"Task in extract_stream_url_async race failed: {e}")
-            if result:
-                break
-                
-        # Cancel remaining tasks
-        for task in pending:
-            task.cancel()
-            
-        if result:
-            return result
-            
-        return None
+        # 2. Only if yt-dlp fails, attempt fallback stream extraction
+        logger.info("Primary yt-dlp extraction failed. Attempting fallback stream extraction...")
+        return await cls._extract_stream_url_fallback_async(url)
 
 
     @classmethod
