@@ -35,6 +35,16 @@ def _process_is_running(pid: int) -> bool:
             os.kill(pid, 0)
         except OSError:
             return False
+        
+        # Verify cmdline to handle Linux thread PID collisions
+        try:
+            with open(f"/proc/{pid}/cmdline", "r", errors="ignore") as f:
+                cmdline = f.read()
+            if cmdline and "dc.py" not in cmdline:
+                return False
+        except Exception:
+            # Fall back to True if we cannot read /proc (e.g. macOS or permissions)
+            pass
         return True
 
 
