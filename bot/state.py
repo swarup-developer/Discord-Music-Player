@@ -12,6 +12,9 @@ class QueueItem:
     query: str
     title: str = "Unknown"
     requested_by: Optional[int] = None
+    # Full provider song dict (when known) so the queue can replay the exact
+    # song via _play_song_data instead of re-searching a raw ID/query.
+    song_data: Optional[dict] = None
 
 
 @dataclass
@@ -32,6 +35,13 @@ class GuildSession:
     start_time: float = 0.0
     paused_duration: float = 0.0
     last_paused_at: Optional[float] = None
+    # Incremented every time a new playback starts. Stale "after" callbacks
+    # from a stopped track compare their captured generation against this and
+    # bail out instead of clobbering the newer track's state.
+    playback_generation: int = 0
+    # Set by the Next/skip action so repeat-one (loop_mode="song") advances to
+    # the next queue item instead of replaying the same song.
+    skip_requested: bool = False
 
 
 class BotState:

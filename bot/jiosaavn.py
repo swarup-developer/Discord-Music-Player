@@ -240,6 +240,8 @@ class JioSaavnEngine:
 
     async def get_media_url(self, song: Dict[str, Any]) -> Optional[str]:
         more_info = song.get("more_info", {})
+        if not isinstance(more_info, dict):
+            more_info = {}
         encrypted_url = song.get("encrypted_media_url") or more_info.get("encrypted_media_url")
         if encrypted_url:
             decrypted = self.decrypt_url(encrypted_url)
@@ -284,12 +286,13 @@ class JioSaavnHandler:
     def extract_token_from_url(cls, url: str) -> Optional[str]:
         # Strip trailing slashes and split
         parts = url.rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == "song":
-            return parts[-1]
         try:
             idx = parts.index("song")
+            # The token is always the FINAL path segment. Links can be either
+            # /song/<token> or /song/<slug>/<token>; returning parts[idx + 1]
+            # would hand back the human-readable slug, which the API rejects.
             if idx + 1 < len(parts):
-                return parts[idx + 1]
+                return parts[-1]
         except ValueError:
             pass
         return None
@@ -357,9 +360,10 @@ class JioSaavnHandler:
                 # HTTP call needed here.
                 song_data = results[0]
             else:
-                # URL lookup path: enrich with full details if not already present.
+                # URL lookup path: enrich with full details only when the token
+                # lookup did not already return playable media info.
                 song_id = song_data.get("id")
-                if song_id:
+                if song_id and not cls._has_media(song_data):
                     full_data = await cls.engine.get_song_details(song_id)
                     if full_data:
                         song_data.update(full_data)
@@ -378,12 +382,29 @@ class JioSaavnHandler:
             logger.error(f"Audio source error: {e}")
             return None, None
 
+    @staticmethod
+    def _has_media(song: dict) -> bool:
+        """True when the song dict already carries enough to resolve a stream."""
+        if song.get("encrypted_media_url") or song.get("media_url") or song.get("media_preview_url"):
+            return True
+        more_info = song.get("more_info") or {}
+        if isinstance(more_info, dict):
+            return bool(
+                more_info.get("encrypted_media_url")
+                or more_info.get("media_url")
+                or more_info.get("media_preview_url")
+            )
+        return False
+
     @classmethod
     async def get_audio_source_for_song(cls, song: dict, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
         try:
             song_data = dict(song)
             song_id = song_data.get("id")
-            if song_id:
+            # Search results already carry full details (encrypted_media_url,
+            # etc.). Only re-fetch when media info is missing, so queue
+            # advancement / Next does not stall on an extra HTTP round trip.
+            if song_id and not cls._has_media(song_data):
                 full_data = await cls.engine.get_song_details(song_id)
                 if full_data:
                     song_data.update(full_data)

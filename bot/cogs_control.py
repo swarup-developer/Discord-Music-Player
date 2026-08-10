@@ -45,6 +45,8 @@ class ControlCog(commands.Cog):
         session = self.state.session_for(interaction.guild.id)
         if session.voice_client and session.voice_client.is_playing():
             session.advance_queue_on_stop = True
+            # Skip always advances to the next queue item, even in repeat-one mode.
+            session.skip_requested = True
             session.voice_client.stop()
             await interaction.response.send_message("Skipped to the next track.")
         else:

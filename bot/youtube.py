@@ -13,8 +13,6 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-  # seconds per instance attempt
-
 # yt-dlp fallback config
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -671,12 +669,16 @@ class YouTubeHandler:
         
         loop = asyncio.get_event_loop()
         
-        # 1. Start primary yt-dlp extraction with 1.5s cap
+        # 1. Start primary yt-dlp extraction with a short cap. With cookies
+        # loaded, yt-dlp usually resolves a direct googlevideo URL in 2-4s;
+        # the Invidious/Cobalt fallbacks race alongside and win when they are
+        # faster. The cap must be long enough for yt-dlp to actually finish on
+        # servers where every public fallback instance is down/rate-limited.
         async def _yt_dlp_task():
             try:
                 return await asyncio.wait_for(
                     loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url),
-                    timeout=1.5
+                    timeout=2.5
                 )
             except Exception:
                 return None
@@ -847,6 +849,10 @@ class YouTubeHandler:
                 return None, None
             
             stream_url, title, is_live, duration = meta
+            # When a public fallback (Invidious/Cobalt) wins the extraction race
+            # it may not carry a title; prefer the search-result title then.
+            if not title or title == "Unknown YouTube Video":
+                title = song.get("title") or song.get("song") or title
             
             ffmpeg_options = "-vn -flags low_delay"
             filters = []

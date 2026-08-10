@@ -458,12 +458,14 @@ class MusicCog(commands.Cog):
         async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
-            vc = self.cog._session(interaction.guild.id).advance_queue_on_stop = True
-            vc = self.cog._session(interaction.guild.id).voice_client
+            session = self.cog._session(interaction.guild.id)
+            vc = session.voice_client
             if not vc or not vc.is_connected():
                 return await interaction.response.send_message("Nothing is connected.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
-            self.cog._session(interaction.guild.id).advance_queue_on_stop = True
+            session.advance_queue_on_stop = True
+            # Next always advances to the next queue item, even in repeat-one mode.
+            session.skip_requested = True
             vc.stop()
 
         @discord.ui.button(label="Loop", style=discord.ButtonStyle.success, row=1)
@@ -684,6 +686,110 @@ class MusicCog(commands.Cog):
             session.advance_queue_on_stop = False
             session.voice_client.stop()
 
+    def _make_after_playback(self, guild_id: int, session, generation: int, temp_file_path: Optional[str]):
+        """Build the ``after`` callback for a playback started at ``generation``.
+
+        The ``after`` callback runs on discord.py's audio-player thread, so it
+        can fire *after* a newer track already started (Next/Prev/seek/reload).
+        A generation mismatch means a newer playback owns the session now: the
+        stale callback only cleans up the temp file *this* playback created and
+        leaves the new track's state alone. Without this guard, the stopped
+        track's callback would clear ``is_playing``/``current_song_title`` and
+        destroy ``current_song_data`` of the track that replaced it, which is
+        exactly what made the Prev/Next controller appear broken.
+        """
+        def after_playback(error):
+            if generation != session.playback_generation:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                    except Exception:
+                        pass
+                return
+
+            if error:
+                logger.error(f"Playback error: {error}")
+            session.is_playing = False
+            session.current_song_title = None
+            session.start_time = 0.0
+            session.paused_duration = 0.0
+            session.last_paused_at = None
+            if session.temp_file_path:
+                try:
+                    if os.path.exists(session.temp_file_path):
+                        os.remove(session.temp_file_path)
+                except Exception:
+                    pass
+                session.temp_file_path = None
+
+            old_data = session.current_song_data
+            if old_data:
+                if not session.history or session.history[-1] != old_data:
+                    session.history.append(old_data)
+                    if len(session.history) > 20:
+                        session.history.pop(0)
+                session.current_song_data = None
+
+            if session.advance_queue_on_stop:
+                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
+            session.advance_queue_on_stop = True
+            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+
+            # Instant memory reclamation
+            import gc
+            import ctypes
+            gc.collect()
+            try:
+                libc = ctypes.CDLL("libc.so.6")
+                libc.malloc_trim(0)
+            except Exception:
+                pass
+
+        return after_playback
+
+    async def _start_playback(
+        self,
+        guild_id: int,
+        audio_source: discord.AudioSource,
+        title: str,
+        current_song_data: dict,
+        seek_start: Optional[float] = None,
+    ) -> bool:
+        """Wrap, register and start a playback with race-safe ``after`` handling.
+
+        Bumps ``playback_generation`` so the previous track's ``after``
+        callback (still running on the audio thread) cannot clobber this new
+        playback's state. Returns False if the voice client is not usable.
+        """
+        session = self._session(guild_id)
+        if not session.voice_client or not session.voice_client.is_connected():
+            return False
+
+        volume = self.state.get_volume(guild_id)
+        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
+
+        # Resolve temp_file_path recursively
+        src = audio_source
+        while hasattr(src, "original"):
+            src = src.original
+        temp_file_path = getattr(src, "temp_file_path", None)
+
+        session.playback_generation += 1
+        generation = session.playback_generation
+
+        session.temp_file_path = temp_file_path
+        session.start_time = (time.time() - seek_start) if seek_start is not None else time.time()
+        session.paused_duration = 0.0
+        session.last_paused_at = None
+        session.current_song_data = current_song_data
+
+        after = self._make_after_playback(guild_id, session, generation, temp_file_path)
+        session.voice_client.play(audio_source, after=after)
+        session.is_playing = True
+        session.current_song_title = title
+        await self.refresh_controller(guild_id)
+        return True
+
     async def _get_audio_source_and_title(self, guild_id: int, query: str, volume: float, effects: Optional[list[str]], seek: Optional[float] = None, eq_preset: Optional[str] = None):
         if JioSaavnHandler.is_jiosaavn_url(query):
             return await JioSaavnHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
@@ -811,15 +917,20 @@ class MusicCog(commands.Cog):
                 raw_source = discord.FFmpegPCMAudio(sound_path, options="-vn")
                 audio_source = discord.PCMVolumeTransformer(raw_source, volume=volume ** 2)
 
+                session.playback_generation += 1
+                startup_generation = session.playback_generation
                 session.is_playing = True
                 session.current_song_title = "Startup Sound"
 
                 def after_startup(error):
+                    # A real track may have replaced the startup sound already;
+                    # do not clobber its state or yank the next queue item.
+                    if startup_generation != session.playback_generation:
+                        return
                     if error:
                         logger.error(f"Startup sound playback error: {error}")
                     session.is_playing = False
                     session.current_song_title = None
-                    asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id), self.bot.loop)
                     asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
 
                 session.voice_client.play(audio_source, after=after_startup)
@@ -889,63 +1000,13 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{query}**")
-        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
-        
-        # Resolve temp_file_path recursively
-        src = audio_source
-        while hasattr(src, "original"):
-            src = src.original
-        session.temp_file_path = getattr(src, "temp_file_path", None)
-        session.start_time = time.time()
-        session.paused_duration = 0.0
-        session.last_paused_at = None
+
         guild_id = interaction.guild.id
-
-        def after_playback(error):
-            if error:
-                logger.error(f"Playback error: {error}")
-            session.is_playing = False
-            session.current_song_title = None
-            session.start_time = 0.0
-            session.paused_duration = 0.0
-            session.last_paused_at = None
-            if session.temp_file_path:
-                try:
-                    if os.path.exists(session.temp_file_path):
-                        os.remove(session.temp_file_path)
-                except Exception:
-                    pass
-                session.temp_file_path = None
-            
-            old_data = session.current_song_data
-            if old_data:
-                if not session.history or session.history[-1] != old_data:
-                    session.history.append(old_data)
-                    if len(session.history) > 20:
-                        session.history.pop(0)
-                session.current_song_data = None
-
-            if session.advance_queue_on_stop:
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
-            session.advance_queue_on_stop = True
-            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
-
-            # Instant memory reclamation
-            import gc
-            import ctypes
-            gc.collect()
-            try:
-                libc = ctypes.CDLL("libc.so.6")
-                libc.malloc_trim(0)
-            except Exception:
-                pass
-
-        session.voice_client.play(audio_source, after=after_playback)
-        session.is_playing = True
-        session.current_song_title = title
         session.current_song_data = {"type": "query", "query": query, "title": title}
+        started = await self._start_playback(guild_id, audio_source, title, session.current_song_data)
+        if not started:
+            return await interaction.followup.send("Join a voice channel first!")
         await interaction.followup.send(f"Now playing: **{title}**")
-        await self.refresh_controller(interaction.guild.id)
 
     async def _play_song_data(self, song: dict, interaction: discord.Interaction):
         if not interaction.guild:
@@ -965,63 +1026,13 @@ class MusicCog(commands.Cog):
         audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
             return await interaction.followup.send(f"Failed to play: **{song.get('song') or song.get('title') or 'Unknown'}**")
-        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
-        
-        # Resolve temp_file_path recursively
-        src = audio_source
-        while hasattr(src, "original"):
-            src = src.original
-        session.temp_file_path = getattr(src, "temp_file_path", None)
-        session.start_time = time.time()
-        session.paused_duration = 0.0
-        session.last_paused_at = None
+
         guild_id = interaction.guild.id
-
-        def after_playback(error):
-            if error:
-                logger.error(f"Playback error: {error}")
-            session.is_playing = False
-            session.current_song_title = None
-            session.start_time = 0.0
-            session.paused_duration = 0.0
-            session.last_paused_at = None
-            if session.temp_file_path:
-                try:
-                    if os.path.exists(session.temp_file_path):
-                        os.remove(session.temp_file_path)
-                except Exception:
-                    pass
-                session.temp_file_path = None
-            
-            old_data = session.current_song_data
-            if old_data:
-                if not session.history or session.history[-1] != old_data:
-                    session.history.append(old_data)
-                    if len(session.history) > 20:
-                        session.history.pop(0)
-                session.current_song_data = None
-
-            if session.advance_queue_on_stop:
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
-            session.advance_queue_on_stop = True
-            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
-
-            # Instant memory reclamation
-            import gc
-            import ctypes
-            gc.collect()
-            try:
-                libc = ctypes.CDLL("libc.so.6")
-                libc.malloc_trim(0)
-            except Exception:
-                pass
-
-        session.voice_client.play(audio_source, after=after_playback)
-        session.is_playing = True
-        session.current_song_title = title
         session.current_song_data = {"type": "song", "song": song, "title": title}
+        started = await self._start_playback(guild_id, audio_source, title, session.current_song_data)
+        if not started:
+            return await interaction.followup.send("Join a voice channel first!")
         await interaction.followup.send(f"Now playing: **{title}**")
-        await self.refresh_controller(interaction.guild.id)
 
     async def _enqueue_or_play(self, query: str, interaction: discord.Interaction):
         if not interaction.guild:
@@ -1045,13 +1056,20 @@ class MusicCog(commands.Cog):
         loop_mode = self.state.get_loop_mode(guild_id)
         queue = self.state.queue_for(guild_id)
         
+        # A user-initiated skip (Next button) always advances to the next queue
+        # item, overriding repeat-one so the same song is not replayed.
+        skip_requested = session.skip_requested
+        session.skip_requested = False
+        if skip_requested and loop_mode == "song":
+            loop_mode = "off"
+        
         next_item = None
         
         if loop_mode == "song" and last_song_data:
             if last_song_data["type"] == "query":
                 next_item = QueueItem(query=last_song_data["query"], title=last_song_data["title"])
             else:
-                next_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"])
+                next_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"], song_data=last_song_data["song"])
         elif not queue:
             return
         else:
@@ -1060,7 +1078,7 @@ class MusicCog(commands.Cog):
                 if last_song_data["type"] == "query":
                     old_item = QueueItem(query=last_song_data["query"], title=last_song_data["title"])
                 else:
-                    old_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"])
+                    old_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"], song_data=last_song_data["song"])
                 queue.append(old_item)
 
         guild = self.bot.get_guild(guild_id)
@@ -1086,6 +1104,9 @@ class MusicCog(commands.Cog):
                 await self._play_audio(last_song_data["query"], proxy, title=last_song_data.get("title"))
             else:
                 await self._play_song_data(last_song_data["song"], proxy)
+        elif next_item.song_data:
+            # Replay the exact resolved song instead of re-searching a raw ID.
+            await self._play_song_data(next_item.song_data, proxy)
         else:
             await self._play_audio(next_item.query, proxy, title=next_item.title)
 
@@ -1101,7 +1122,11 @@ class MusicCog(commands.Cog):
             if session.current_song_data["type"] == "query":
                 item = QueueItem(query=session.current_song_data["query"], title=session.current_song_data["title"])
             else:
-                item = QueueItem(query=session.current_song_data["song"].get("id"), title=session.current_song_data["title"])
+                item = QueueItem(
+                    query=session.current_song_data["song"].get("id"),
+                    title=session.current_song_data["title"],
+                    song_data=session.current_song_data["song"],
+                )
             queue.appendleft(item)
 
         self._stop_current_track_for_manual_replace(guild_id)
@@ -1147,42 +1172,7 @@ class MusicCog(commands.Cog):
             logger.warning(f"reload_current_track: failed to get audio source for guild {guild_id}")
             return
 
-        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
-        
-        # Resolve temp_file_path recursively
-        src = audio_source
-        while hasattr(src, "original"):
-            src = src.original
-        session.temp_file_path = getattr(src, "temp_file_path", None)
-        
-        session.start_time = time.time() - elapsed
-        session.paused_duration = 0.0
-        session.last_paused_at = None
-        session.current_song_data = current_data
-
-        def after_reload(error):
-            if error:
-                logger.error(f"Reload playback error: {error}")
-            session.is_playing = False
-            session.current_song_title = None
-            session.start_time = 0.0
-            session.paused_duration = 0.0
-            session.last_paused_at = None
-            old_data = session.current_song_data
-            if old_data:
-                if not session.history or session.history[-1] != old_data:
-                    session.history.append(old_data)
-                session.current_song_data = None
-            if session.advance_queue_on_stop:
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
-            session.advance_queue_on_stop = True
-            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
-
-        if session.voice_client and session.voice_client.is_connected():
-            session.voice_client.play(audio_source, after=after_reload)
-            session.is_playing = True
-            session.current_song_title = title
-            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
+        await self._start_playback(guild_id, audio_source, title, current_data, seek_start=elapsed)
 
     async def seek_relative(self, guild_id: int, offset_seconds: float, interaction: Optional[discord.Interaction] = None):
         session = self._session(guild_id)
@@ -1220,50 +1210,7 @@ class MusicCog(commands.Cog):
             logger.warning(f"seek_relative: failed to get audio source for guild {guild_id}")
             return
 
-        audio_source = discord.PCMVolumeTransformer(JitterBuffer(audio_source), volume=volume ** 2)
-        
-        src = audio_source
-        while hasattr(src, "original"):
-            src = src.original
-        session.temp_file_path = getattr(src, "temp_file_path", None)
-        session.start_time = time.time() - target_time
-        session.paused_duration = 0.0
-        session.last_paused_at = None
-        session.current_song_data = current_data
-
-        def after_seek(error):
-            if error:
-                logger.error(f"Seek playback error: {error}")
-            session.is_playing = False
-            session.current_song_title = None
-            session.start_time = 0.0
-            session.paused_duration = 0.0
-            session.last_paused_at = None
-            if session.temp_file_path:
-                try:
-                    if os.path.exists(session.temp_file_path):
-                        os.remove(session.temp_file_path)
-                except Exception:
-                    pass
-                session.temp_file_path = None
-            
-            old_data = session.current_song_data
-            if old_data:
-                if not session.history or session.history[-1] != old_data:
-                    session.history.append(old_data)
-                    if len(session.history) > 20:
-                        session.history.pop(0)
-                session.current_song_data = None
-
-            if session.advance_queue_on_stop:
-                asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
-            session.advance_queue_on_stop = True
-            asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
-
-        session.voice_client.play(audio_source, after=after_seek)
-        session.is_playing = True
-        session.current_song_title = title
-        await self.refresh_controller(guild_id)
+        await self._start_playback(guild_id, audio_source, title, current_data, seek_start=target_time)
 
     async def _cleanup_if_empty(self, guild: discord.Guild) -> None:
         voice_client = guild.voice_client
@@ -1360,7 +1307,9 @@ class MusicCog(commands.Cog):
                 
                 is_playing = session.voice_client and (session.voice_client.is_playing() or session.voice_client.is_paused())
                 if is_playing:
-                    queue.append(QueueItem(query=song_query, title=song_title, requested_by=interaction.user.id))
+                    # Keep the resolved song dict so the queue can replay the
+                    # exact track later instead of re-searching a raw ID.
+                    queue.append(QueueItem(query=song_query, title=song_title, requested_by=interaction.user.id, song_data=song))
                     return await interaction.followup.send(f"Queued: **{song_title}** (from Spotify track)")
                 else:
                     await self._play_song_data(song, interaction)
@@ -1384,7 +1333,11 @@ class MusicCog(commands.Cog):
                         first_title = JioSaavnHandler.engine.format_string(first_title)
                 
                 if is_playing:
-                    queue.append(QueueItem(query=first_query, title=first_title, requested_by=interaction.user.id))
+                    queue.append(QueueItem(query=first_query, title=first_title, requested_by=interaction.user.id, song_data=first_song if first_results else None))
+                elif first_results:
+                    # Play the resolved song directly; JioSaavn results have no
+                    # "url" key, so playing by raw ID would fail to resolve.
+                    await self._play_song_data(first_song, interaction)
                 else:
                     await self._play_audio(first_query, interaction, title=first_title)
                 
@@ -1515,7 +1468,7 @@ class MusicCog(commands.Cog):
             return await interaction.followup.send(
                 "This bot is already active in another server. Leave that server's voice channel first."
             )
-        if song.startswith("http://") or song.startswith("https://"):
+        if (song.startswith("http://") or song.startswith("https://")) and not SpotifyHandler.is_spotify_url(song):
             return await interaction.followup.send("Please use the `/url` command to play direct links!")
         await self._resolve_and_play(song, interaction)
 
