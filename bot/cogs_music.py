@@ -17,10 +17,15 @@ from .spotify import SpotifyHandler
 from .local_files import LocalFileHandler
 from .tv import IPTVManager, CountrySelectView, IPTVChannelView, LanguageSelectView
 from .state import BotState, QueueItem
-from .audio_source import JitterBuffer
+from .audio_source import JitterBuffer, apply_seek, build_ffmpeg_options, make_stream_source
 from .search import search_songs
 
 logger = logging.getLogger(__name__)
+
+_FILE_BEFORE_OPTIONS = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+_HTTP_BEFORE_OPTIONS = (
+    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 " + _FILE_BEFORE_OPTIONS
+)
 
 
 class QueueView(discord.ui.View):
@@ -777,6 +782,19 @@ class MusicCog(commands.Cog):
         session.playback_generation += 1
         generation = session.playback_generation
 
+        # Remember what this playback is reading from, so seek and EQ changes
+        # can rebuild FFmpeg locally instead of resolving the track again.
+        stream_input = getattr(src, "stream_input", None)
+        if stream_input:
+            session.stream_cache = {
+                "input": stream_input,
+                "before": getattr(src, "stream_before_options", "") or "",
+                "temp_file_path": temp_file_path,
+                "title": title,
+            }
+        else:
+            session.stream_cache = None
+
         session.temp_file_path = temp_file_path
         session.start_time = (time.time() - seek_start) if seek_start is not None else time.time()
         session.paused_duration = 0.0
@@ -784,6 +802,13 @@ class MusicCog(commands.Cog):
         session.current_song_data = current_song_data
 
         after = self._make_after_playback(guild_id, session, generation, temp_file_path)
+        # Log the audio processing actually in force: EQ and effects persist in
+        # server_settings.json per guild, so a preset selected once keeps
+        # applying to every later track on every provider.
+        logger.info(
+            "Starting playback: title=%r eq=%s effects=%s volume=%.2f",
+            title, self.state.get_eq_preset(guild_id), self.state.get_effects(guild_id), volume,
+        )
         session.voice_client.play(audio_source, after=after)
         session.is_playing = True
         session.current_song_title = title
@@ -797,69 +822,33 @@ class MusicCog(commands.Cog):
             return await YouTubeHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         elif SoundCloudHandler.is_soundcloud_url(query):
             return await SoundCloudHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
+        elif SpotifyHandler.is_spotify_url(query):
+            meta = await SpotifyHandler.resolve_url(query)
+            if meta and meta.get("tracks"):
+                track = meta["tracks"][0]
+                search_query = f"{track['title']} {track['artist']}"
+                results = await search_songs(search_query, "youtube", limit=1)
+                if results:
+                    return await YouTubeHandler.get_audio_source_for_song(
+                        results[0], volume, effects=effects, seek=seek, eq_preset=eq_preset
+                    )
+            return None, None
         elif os.path.exists(query) and os.path.isfile(query):
             # Local file playback
             try:
-                ffmpeg_options = "-vn -flags low_delay"
-                filters = []
-                if eq_preset:
-                    if eq_preset == "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    elif eq_preset == "vocal":
-                        filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                    elif eq_preset == "treble":
-                        filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                    elif eq_preset == "lofi":
-                        filters.append("highpass=f=300,lowpass=f=4000")
-                    elif eq_preset == "acoustic":
-                        filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
-
-                if __name__ == "__main__" or effects:
-                    if effects and "bassboost" in effects and eq_preset != "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    if effects and "nightcore" in effects:
-                        filters.append("asetrate=48000*1.25")
-                filters.append("aresample=osr=48000:osf=s16")
-                ffmpeg_options += f' -af "{",".join(filters)}"'
-
-                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                if seek and seek > 0:
-                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-
-                audio_source = discord.FFmpegPCMAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
+                ffmpeg_before_options = apply_seek(_FILE_BEFORE_OPTIONS, seek)
+                audio_source = make_stream_source(query, ffmpeg_before_options, ffmpeg_options)
                 title = os.path.basename(query)
                 return audio_source, title
             except Exception as e:
                 logger.error(f"Failed to play local file: {e}")
                 return None, None
         elif query.startswith("http://") or query.startswith("https://"):
-            ffmpeg_options = "-vn -flags low_delay"
-            filters = []
-            if eq_preset:
-                if eq_preset == "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                elif eq_preset == "vocal":
-                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                elif eq_preset == "treble":
-                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                elif eq_preset == "lofi":
-                    filters.append("highpass=f=300,lowpass=f=4000")
-                elif eq_preset == "acoustic":
-                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
-
-            if effects:
-                if "bassboost" in effects and eq_preset != "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                if "nightcore" in effects:
-                    filters.append("asetrate=48000*1.25")
-            filters.append("aresample=osr=48000:osf=s16")
-            ffmpeg_options += f' -af "{",".join(filters)}"'
-            
-            ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-            if seek and seek > 0:
-                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
+            ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
+            ffmpeg_before_options = apply_seek(_HTTP_BEFORE_OPTIONS, seek)
             try:
-                audio_source = discord.FFmpegPCMAudio(query, before_options=ffmpeg_before_options, options=ffmpeg_options)
+                audio_source = make_stream_source(query, ffmpeg_before_options, ffmpeg_options)
                 title = query.split("/")[-1] or "Direct Stream"
                 title = title.split("?")[0]
                 return audio_source, title
@@ -885,7 +874,7 @@ class MusicCog(commands.Cog):
                 return await JioSaavnHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
 
     async def _get_audio_source_for_song(self, song: dict, volume: float, effects: Optional[list[str]], seek: Optional[float] = None, eq_preset: Optional[str] = None):
-        if song.get("provider") == "youtube":
+        if song.get("provider") in ("youtube", "spotify"):
             return await YouTubeHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         elif song.get("provider") == "soundcloud":
             return await SoundCloudHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
@@ -943,6 +932,10 @@ class MusicCog(commands.Cog):
         if not interaction.guild:
             return await interaction.followup.send("This command can only be used in a server.")
         
+        # If Spotify URL, route to resolve_and_play
+        if SpotifyHandler.is_spotify_url(query):
+            return await self._resolve_and_play(query, interaction)
+
         # Play URL natively without switching default provider
         is_url = query.startswith("http://") or query.startswith("https://")
         abs_path = LocalFileHandler.get_absolute_path(query)
@@ -971,7 +964,8 @@ class MusicCog(commands.Cog):
         if (query.startswith("http://") or query.startswith("https://")) and not (
             JioSaavnHandler.is_jiosaavn_url(query) or
             YouTubeHandler.is_youtube_url(query) or
-            SoundCloudHandler.is_soundcloud_url(query)
+            SoundCloudHandler.is_soundcloud_url(query) or
+            SpotifyHandler.is_spotify_url(query)
         ):
             is_reachable = True
             error_reason = ""
@@ -999,7 +993,13 @@ class MusicCog(commands.Cog):
 
         audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
-            return await interaction.followup.send(f"Failed to play: **{query}**")
+            provider = self.state.get_provider(interaction.guild.id)
+            logger.error("Extraction returned no audio source. provider=%s query=%r", provider, query)
+            return await interaction.followup.send(
+                f"Failed to play: **{query}**\n"
+                f"Provider `{provider}` could not return a stream. "
+                f"Try `/provider` to switch source, or try again in a moment."
+            )
 
         guild_id = interaction.guild.id
         session.current_song_data = {"type": "query", "query": query, "title": title}
@@ -1025,7 +1025,20 @@ class MusicCog(commands.Cog):
         eq_preset = self.state.get_eq_preset(interaction.guild.id)
         audio_source, title = await self._get_audio_source_for_song(song, volume, effects=effects, eq_preset=eq_preset)
         if not audio_source:
-            return await interaction.followup.send(f"Failed to play: **{song.get('song') or song.get('title') or 'Unknown'}**")
+            provider = self.state.get_provider(interaction.guild.id)
+            song_name = song.get("song") or song.get("title") or "Unknown"
+            # Log the identifiers too: "Failed to play: <title>" alone gives
+            # nothing to debug from, and extraction failures are usually
+            # provider-specific rather than song-specific.
+            logger.error(
+                "Extraction returned no audio source. provider=%s title=%r url=%r id=%r",
+                provider, song_name, song.get("url"), song.get("id"),
+            )
+            return await interaction.followup.send(
+                f"Failed to play: **{song_name}**\n"
+                f"Provider `{provider}` could not return a stream. "
+                f"Try `/provider` to switch source, or try again in a moment."
+            )
 
         guild_id = interaction.guild.id
         session.current_song_data = {"type": "song", "song": song, "title": title}
@@ -1137,6 +1150,64 @@ class MusicCog(commands.Cog):
         else:
             await self._play_song_data(prev_track["song"], interaction)
 
+    def _source_from_cache(self, cache: Optional[dict], seek: Optional[float], effects, eq_preset):
+        """Rebuild FFmpeg from an already-resolved stream, or return (None, None).
+
+        Seeking and switching EQ used to re-run the whole provider pipeline --
+        search, then extraction (up to 15s for yt-dlp) -- just to restart FFmpeg
+        at a different offset. The stream URL is already known and stays valid
+        for hours, so restarting FFmpeg against it is effectively instant.
+        """
+        if not cache:
+            return None, None
+        input_url = cache.get("input")
+        if not input_url:
+            return None, None
+        # A temp-file playback may already have been cleaned up by the previous
+        # track's `after` callback; fall back to a full re-resolve then.
+        if cache.get("temp_file_path") and not os.path.exists(input_url):
+            return None, None
+        try:
+            source = make_stream_source(
+                input_url,
+                apply_seek(cache.get("before") or "", seek),
+                build_ffmpeg_options(effects, eq_preset),
+                temp_file_path=cache.get("temp_file_path"),
+            )
+        except Exception as e:
+            logger.warning("Could not reuse the resolved stream, re-resolving: %s", e)
+            return None, None
+        return source, cache.get("title")
+
+    async def _notify_playback_stopped(self, guild_id: int, interaction: Optional[discord.Interaction], action: str) -> None:
+        """Tell the user that playback stopped, instead of just going quiet.
+
+        Reload and seek stop the current track before rebuilding it, with queue
+        advancement disabled. If the rebuild fails there is nothing left to play
+        and no callback to report it, so without this the bot simply falls
+        silent with no explanation anywhere the user can see.
+        """
+        provider = self.state.get_provider(guild_id)
+        message = (
+            f"Playback stopped while {action}. Provider `{provider}` could not return the stream "
+            f"again. Use `/play` to restart the track, or `/provider` to switch source."
+        )
+        try:
+            if interaction is not None:
+                await interaction.followup.send(message, ephemeral=True)
+                return
+        except Exception:
+            pass
+        session = self._session(guild_id)
+        channel_id = session.linked_text_channel_id
+        if channel_id:
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                try:
+                    await channel.send(message)
+                except Exception:
+                    pass
+
     async def reload_current_track(self, guild_id: int, interaction: discord.Interaction):
         session = self._session(guild_id)
         if not session.current_song_data:
@@ -1152,24 +1223,34 @@ class MusicCog(commands.Cog):
             elapsed = max(0.0, elapsed)
 
         current_data = session.current_song_data
+        cache = session.stream_cache
         session.current_song_data = None
         session.advance_queue_on_stop = False
         if session.voice_client:
             session.voice_client.stop()
-            
+
         await asyncio.sleep(0.5)
 
         volume = self.state.get_volume(guild_id)
         effects = self.state.get_effects(guild_id)
         eq_preset = self.state.get_eq_preset(guild_id)
 
-        if current_data["type"] == "query":
-            audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
-        else:
-            audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
+        audio_source, title = self._source_from_cache(cache, elapsed, effects, eq_preset)
+        if not audio_source:
+            if current_data["type"] == "query":
+                audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
+            else:
+                audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=elapsed, eq_preset=eq_preset)
 
         if not audio_source:
-            logger.warning(f"reload_current_track: failed to get audio source for guild {guild_id}")
+            # This path had stopped the track before re-resolving it, so a
+            # failure here left the bot silent with nothing in chat and no
+            # queue advancement -- "nothing is playing and I don't know why".
+            logger.error(
+                "reload_current_track: could not rebuild the stream. guild=%s provider=%s title=%r",
+                guild_id, self.state.get_provider(guild_id), current_data.get("title"),
+            )
+            await self._notify_playback_stopped(guild_id, interaction, "applying that audio setting")
             return
 
         await self._start_playback(guild_id, audio_source, title, current_data, seek_start=elapsed)
@@ -1190,24 +1271,31 @@ class MusicCog(commands.Cog):
         target_time = max(0.0, elapsed + offset_seconds)
         
         current_data = session.current_song_data
+        cache = session.stream_cache
         session.current_song_data = None
         session.advance_queue_on_stop = False
         if session.voice_client:
             session.voice_client.stop()
-            
+
         await asyncio.sleep(0.3)
 
         volume = self.state.get_volume(guild_id)
         effects = self.state.get_effects(guild_id)
         eq_preset = self.state.get_eq_preset(guild_id)
 
-        if current_data["type"] == "query":
-            audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
-        else:
-            audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
+        audio_source, title = self._source_from_cache(cache, target_time, effects, eq_preset)
+        if not audio_source:
+            if current_data["type"] == "query":
+                audio_source, title = await self._get_audio_source_and_title(guild_id, current_data["query"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
+            else:
+                audio_source, title = await self._get_audio_source_for_song(current_data["song"], volume, effects=effects, seek=target_time, eq_preset=eq_preset)
 
         if not audio_source:
-            logger.warning(f"seek_relative: failed to get audio source for guild {guild_id}")
+            logger.error(
+                "seek_relative: could not rebuild the stream. guild=%s provider=%s title=%r target=%.1fs",
+                guild_id, self.state.get_provider(guild_id), current_data.get("title"), target_time,
+            )
+            await self._notify_playback_stopped(guild_id, interaction, "seeking")
             return
 
         await self._start_playback(guild_id, audio_source, title, current_data, seek_start=target_time)
@@ -1297,11 +1385,13 @@ class MusicCog(commands.Cog):
                 track = tracks[0]
                 search_query = f"{track['title']} {track['artist']}"
                 results = await search_songs(search_query, provider, limit=1)
+                if not results and provider != "youtube":
+                    results = await search_songs(search_query, "youtube", limit=1)
                 if not results:
-                    return await interaction.followup.send(f"Resolved Spotify link, but found no matches on {provider.capitalize()} for '{search_query}'.")
+                    return await interaction.followup.send(f"Resolved Spotify link, but found no matches for '{search_query}'.")
                 song = results[0]
                 song_title = song.get("song") or song.get("title") or track['title']
-                if provider == "jiosaavn":
+                if provider == "jiosaavn" and song.get("provider") == "jiosaavn":
                     song_title = JioSaavnHandler.engine.format_string(song_title)
                 song_query = song.get("url") or song.get("id") or search_query
                 
@@ -1322,6 +1412,8 @@ class MusicCog(commands.Cog):
                 first_track = tracks[0]
                 first_search = f"{first_track['title']} {first_track['artist']}"
                 first_results = await search_songs(first_search, provider, limit=1)
+                if not first_results and provider != "youtube":
+                    first_results = await search_songs(first_search, "youtube", limit=1)
                 if not first_results:
                     first_query = first_search
                     first_title = first_track['title']
@@ -1329,7 +1421,7 @@ class MusicCog(commands.Cog):
                     first_song = first_results[0]
                     first_query = first_song.get("url") or first_song.get("id")
                     first_title = first_song.get("song") or first_song.get("title") or first_track['title']
-                    if provider == "jiosaavn":
+                    if provider == "jiosaavn" and first_song.get("provider") == "jiosaavn":
                         first_title = JioSaavnHandler.engine.format_string(first_title)
                 
                 if is_playing:

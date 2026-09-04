@@ -3,15 +3,202 @@ import json
 import logging
 import os
 import re
+import socket
 import tempfile
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Any
 
 import discord
 import httpx
 import yt_dlp
 
+from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
+
+# FFmpeg input options, kept as ``-ss``-free templates so a later seek can be
+# applied with apply_seek() without re-resolving the stream.
+_HTTP_BEFORE_OPTIONS = (
+    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+    "-headers \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\" "
+    "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+)
+_FILE_BEFORE_OPTIONS = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+
+
+def build_http_before_options(http_headers: Optional[dict] = None) -> str:
+    """Build FFmpeg before_options matching yt-dlp's player client request headers."""
+    if http_headers:
+        filtered = {k: v for k, v in http_headers.items() if k.lower() in ("user-agent", "accept", "accept-language", "sec-fetch-mode")}
+        if not any(k.lower() == "user-agent" for k in filtered):
+            filtered["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        header_lines = "".join(f"{k}: {v}\r\n" for k, v in filtered.items())
+        headers_opt = f'-headers "{header_lines}" '
+    else:
+        headers_opt = '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n" '
+    return (
+        f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+        f"{headers_opt}"
+        f"-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+    )
+
 logger = logging.getLogger(__name__)
+
+# Safety-net cap for a single yt-dlp extraction. Start latency is decided by
+# the yt-dlp/fallback race in extract_stream_url_async, not by this value, so
+# it is deliberately generous: a cap tighter than yt-dlp's real latency just
+# guarantees the fallbacks win every time. Observed successful extractions have
+# taken ~8s when YouTube is throttling, so keep well clear of that.
+_YDL_EXTRACT_TIMEOUT = 45.0
+
+# Dedicated bounded pool for blocking yt-dlp calls. asyncio.wait_for cannot
+# cancel a thread that is already running, so timed-out extractions keep
+# occupying a worker until yt-dlp gives up. Isolating them here caps the damage
+# and keeps the default executor free for everything else the bot does.
+_YDL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ydl")
+
+
+POT_SERVER_HOST = "127.0.0.1"
+POT_SERVER_PORT = 4416
+
+# Local youtubei.js resolver (ytjs/server.mjs), the fallback used when yt-dlp
+# cannot extract a stream. Loopback only -- see the security note in server.mjs.
+YTJS_SERVER_HOST = "127.0.0.1"
+YTJS_SERVER_PORT = 4417
+# Generous enough to cover a cold InnerTube session plus a client retry, but
+# still well inside _YDL_EXTRACT_TIMEOUT so the fallback can win the race.
+YTJS_TIMEOUT = 40.0
+
+# Cookie names yt-dlp actually authenticates YouTube with. A logged-in Netscape
+# export contains the first-party set; an export taken while signed out (or by
+# an extension that only captures third-party cookies) contains just the "3P"
+# variants, and YouTube then answers every request from a datacenter IP with
+# "Sign in to confirm you're not a bot".
+_AUTH_COOKIE_NAMES = (
+    "__Secure-1PSID",
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "LOGIN_INFO",
+)
+
+
+def check_pot_provider() -> bool:
+    """Warn at startup if the PO Token provider plugin or server is missing.
+
+    run_windows.bat and setup.sh launch the bgutil POT *server* on port 4416,
+    but yt-dlp can only reach it through the bgutil-ytdlp-pot-provider client
+    plugin. Without the plugin YouTube extraction still "works" -- it just
+    becomes slow and intermittently fails, with no error pointing at the cause.
+    The plugin is easy to lose because `uv sync` prunes anything missing from
+    pyproject.toml, so surface it loudly instead of debugging playback again.
+
+    A loaded plugin does NOT prove the server is reachable, so probe the port
+    too -- the two fail independently.
+    """
+    ok = True
+    try:
+        import yt_dlp_plugins.extractor  # noqa: F401
+        logger.info("PO Token provider plugin loaded.")
+    except ImportError:
+        logger.error(
+            "PO Token provider plugin not found. YouTube playback will be slow "
+            "and unreliable. Install it with: uv sync (or pip install "
+            "bgutil-ytdlp-pot-provider>=1.3.1)"
+        )
+        ok = False
+
+    sock = socket.socket()
+    sock.settimeout(1.5)
+    try:
+        if sock.connect_ex((POT_SERVER_HOST, POT_SERVER_PORT)) == 0:
+            logger.info("POT server is listening on %s:%s.", POT_SERVER_HOST, POT_SERVER_PORT)
+        else:
+            logger.error(
+                "POT server is NOT listening on %s:%s. yt-dlp will get no PO "
+                "token and YouTube playback will be unreliable. Start it with "
+                "run_windows.bat, or `supervisorctl start bgutil-pot` on the server.",
+                POT_SERVER_HOST, POT_SERVER_PORT,
+            )
+            ok = False
+    except Exception as e:
+        logger.warning("Could not probe the POT server port: %s", e)
+    finally:
+        sock.close()
+
+    return ok
+
+
+def check_ytjs_resolver() -> bool:
+    """Warn at startup when the local youtubei.js resolver is not listening.
+
+    It is the only remaining fallback for YouTube extraction, so if it is down
+    a yt-dlp failure means no playback at all rather than a slower path.
+    """
+    sock = socket.socket()
+    sock.settimeout(1.5)
+    try:
+        if sock.connect_ex((YTJS_SERVER_HOST, YTJS_SERVER_PORT)) == 0:
+            logger.info(
+                "Local YouTube resolver is listening on %s:%s.",
+                YTJS_SERVER_HOST, YTJS_SERVER_PORT,
+            )
+            return True
+        logger.error(
+            "Local YouTube resolver is NOT listening on %s:%s. YouTube playback "
+            "will have no fallback if yt-dlp fails. Start it with "
+            "run_windows.bat, or `supervisorctl start dcbot-ytjs` on the server. "
+            "First-time setup needs `npm install` in the ytjs directory.",
+            YTJS_SERVER_HOST, YTJS_SERVER_PORT,
+        )
+        return False
+    except Exception as e:
+        logger.warning("Could not probe the local YouTube resolver port: %s", e)
+        return False
+    finally:
+        sock.close()
+
+
+def check_youtube_cookies() -> bool:
+    """Warn at startup when cookies.txt is missing its authentication cookies.
+
+    Only cookie NAMES are ever read or logged here -- never values.
+    """
+    cookie_file = find_cookie_file()
+    if not cookie_file:
+        logger.warning(
+            "No cookies.txt found. YouTube will likely reject extraction with "
+            "\"Sign in to confirm you're not a bot\"."
+        )
+        return False
+
+    present = set()
+    try:
+        with open(cookie_file, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) >= 6:
+                    present.add(fields[5])
+    except OSError as e:
+        logger.warning("Could not read %s: %s", cookie_file, e)
+        return False
+
+    missing = [name for name in _AUTH_COOKIE_NAMES if name not in present]
+    if missing:
+        logger.error(
+            "%s is missing YouTube auth cookies: %s. This is an export from a "
+            "signed-out session, so YouTube will reject extraction with \"Sign "
+            "in to confirm you're not a bot\". Re-export from a browser profile "
+            "that is signed in to YouTube, then stop using that profile.",
+            cookie_file, ", ".join(missing),
+        )
+        return False
+
+    logger.info("%s contains the expected YouTube auth cookies.", cookie_file)
+    return True
+
 
 # yt-dlp fallback config
 YDL_OPTIONS = {
@@ -23,24 +210,34 @@ YDL_OPTIONS = {
     'source_address': '0.0.0.0',  # Bind to IPv4 to prevent IPv6 timeout issues
     'remote_components': ['ejs:github'],
     'js_runtimes': {'node': {}},
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web']
+        }
+    },
 }
+
+
+def find_cookie_file() -> Optional[str]:
+    """Return the first cookies.txt found in the usual locations, if any."""
+    for cp in (
+        "cookies.txt",
+        "bot/cookies.txt",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
+    ):
+        if os.path.exists(cp):
+            return cp
+    return None
 
 
 def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     opts = {**YDL_OPTIONS}
-    
-    # Check for cookies.txt in common paths and use it if it exists
-    cookies_paths = [
-        "cookies.txt",
-        "bot/cookies.txt",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cookies.txt"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
-    ]
-    for cp in cookies_paths:
-        if os.path.exists(cp):
-            opts['cookiefile'] = cp
-            break
-            
+
+    cookie_file = find_cookie_file()
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
+
     if extra_opts:
         opts.update(extra_opts)
     return opts
@@ -66,42 +263,13 @@ def _is_youtube_playlist_url(url: str) -> bool:
     return "youtube.com/playlist" in q or bool(_YT_PLAYLIST_RE.search(q))
 
 
-# Invidious public instances list for fallback extraction
-INVIDIOUS_INSTANCES = [
-    "inv.thepixora.com",
-    "yt.chocolatemoo53.com",
-    "invidious.nerdvpn.de",
-    "invidious.f5.si",
-    "invidious.tiekoetter.com",
-    "inv.nadeko.net"
-]
-
-# Cobalt public instances list for fallback extraction
-COBALT_INSTANCES = [
-    "https://rue-cobalt.xenon.zone",
-    "https://api.cobalt.liubquanti.click"
-]
+# Invidious/Cobalt public instances used to live here. Every instance was
+# dead, rate-limited or returning empty tunnels, so the fallback failed exactly
+# when it was needed. Extraction now falls back to the local youtubei.js
+# resolver in ytjs/ instead -- see YTJS_SERVER_PORT above.
 
 
 class YouTubeHandler:
-    _working_invidious_instance = None
-    _working_cobalt_instance = None
-
-    @classmethod
-    def _get_invidious_instances(cls) -> list[str]:
-        instances = list(INVIDIOUS_INSTANCES)
-        if cls._working_invidious_instance and cls._working_invidious_instance in instances:
-            instances.remove(cls._working_invidious_instance)
-            instances.insert(0, cls._working_invidious_instance)
-        return instances
-
-    @classmethod
-    def _get_cobalt_instances(cls) -> list[str]:
-        instances = list(COBALT_INSTANCES)
-        if cls._working_cobalt_instance and cls._working_cobalt_instance in instances:
-            instances.remove(cls._working_cobalt_instance)
-            instances.insert(0, cls._working_cobalt_instance)
-        return instances
     @staticmethod
     def is_youtube_url(query: str) -> bool:
         q = query.lower()
@@ -402,212 +570,118 @@ class YouTubeHandler:
         return results
 
     @classmethod
-    def _extract_via_cobalt(cls, url: str) -> Optional[str]:
-        """Fetch audio stream from Cobalt instances."""
-        data = {
-            "url": url,
-            "downloadMode": "audio",
-            "audioFormat": "mp3"
-        }
-        payload = json.dumps(data).encode('utf-8')
-        headers = {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Origin': 'https://cobalt.tools',
-            'Referer': 'https://cobalt.tools/'
-        }
-        instances = cls._get_cobalt_instances()
-        for instance_url in instances:
-            try:
-                req = urllib.request.Request(
-                    instance_url,
-                    data=payload,
-                    headers=headers,
-                    method='POST'
-                )
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    res_data = json.loads(response.read().decode())
-                    if res_data.get("url"):
-                        cls._working_cobalt_instance = instance_url
-                        return res_data.get("url")
-            except Exception as e:
-                logger.warning(f"Cobalt instance {instance_url} failed: {e}")
-        return None
-
-    @classmethod
     async def _validate_stream_url(cls, client: httpx.AsyncClient, url: str) -> bool:
-        """Validate that the stream URL actually returns audio data (non-zero bytes)."""
+        """Validate that the stream URL actually returns audio data (non-zero bytes).
+
+        Skips leading empty chunks rather than treating the first one as a
+        failure: tunnel endpoints that transcode on demand routinely yield an
+        empty chunk while the upstream buffer fills, and rejecting those made
+        working streams look dead. The read timeout still bounds the wait.
+        """
         try:
             async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12.0) as resp:
                 if resp.status_code in [200, 206]:
                     async for chunk in resp.aiter_bytes(chunk_size=1024):
                         if len(chunk) > 0:
                             return True
-                        break
+                    logger.warning(
+                        "Stream validation got %s but no audio bytes for %s",
+                        resp.status_code, url[:80]
+                    )
+                else:
+                    logger.warning(
+                        "Stream validation rejected HTTP %s for %s",
+                        resp.status_code, url[:80]
+                    )
         except Exception as e:
-            logger.debug(f"Stream URL validation failed for {url[:60]}: {e}")
+            logger.warning(f"Stream URL validation failed for {url[:80]}: {e}")
         return False
 
     @classmethod
-    async def _extract_via_cobalt_async(cls, client: httpx.AsyncClient, instance_url: str, url: str) -> Optional[str]:
-        """Fetch audio stream from Cobalt instance asynchronously and validate it."""
-        data = {
-            "url": url,
-            "downloadMode": "audio",
-            "audioFormat": "mp3"
-        }
-        headers = {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Origin': 'https://cobalt.tools',
-            'Referer': 'https://cobalt.tools/'
-        }
+    async def _extract_via_ytjs_async(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
+        """Resolve a stream through the local youtubei.js resolver.
+
+        This replaced the Invidious and Cobalt public instances, which were all
+        either offline, rate-limited or serving empty tunnels -- so the fallback
+        was guaranteed to fail in exactly the situation it existed for. The
+        resolver talks to YouTube's own InnerTube API from this machine, so it
+        depends on nobody else's uptime.
+        """
+        endpoint = f"http://{YTJS_SERVER_HOST}:{YTJS_SERVER_PORT}/stream"
         try:
-            response = await client.post(instance_url, json=data, headers=headers, timeout=10.0)
-            if response.status_code == 200:
-                res_data = response.json()
-                stream_url = res_data.get("url")
-                if stream_url:
-                    if await cls._validate_stream_url(client, stream_url):
-                        cls._working_cobalt_instance = instance_url
-                        return stream_url
-            
-            # Try /api suffix just in case
-            api_url = f"{instance_url.rstrip('/')}/api"
-            response = await client.post(api_url, json=data, headers=headers, timeout=10.0)
-            if response.status_code == 200:
-                res_data = response.json()
-                stream_url = res_data.get("url")
-                if stream_url:
-                    if await cls._validate_stream_url(client, stream_url):
-                        cls._working_cobalt_instance = instance_url
-                        return stream_url
-        except Exception as e:
-            logger.debug(f"Cobalt async instance {instance_url} failed: {e}")
-        return None
-
-    @classmethod
-    def _extract_via_invidious(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
-        """Fetch audio stream and metadata from Invidious instances."""
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        instances = cls._get_invidious_instances()
-        for instance in instances:
-            api_url = f"https://{instance}/api/v1/videos/{video_id}"
-            try:
-                req = urllib.request.Request(api_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode())
-                    title = data.get("title") or "Unknown YouTube Video"
-                    is_live = data.get("liveNow", False)
-                    duration = data.get("lengthSeconds", 0)
-                    
-                    # Construct a proxied stream URL to bypass YouTube IP restrictions (no 403 Forbidden)
-                    stream_url = f"https://{instance}/latest_version?id={video_id}&itag=140&local=true"
-                    cls._working_invidious_instance = instance
-                    return stream_url, title, is_live, duration
-            except Exception as e:
-                logger.warning(f"Invidious instance {instance} failed: {e}")
-        return None
-
-    @classmethod
-    async def _extract_via_invidious_async(cls, client: httpx.AsyncClient, instance: str, video_id: str) -> Optional[tuple[str, str, bool, int]]:
-        """Fetch audio stream and metadata from Invidious instance asynchronously and validate it."""
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        api_url = f"https://{instance}/api/v1/videos/{video_id}"
-        try:
-            response = await client.get(api_url, headers=headers, timeout=6.0)
-            if response.status_code == 200:
-                data = response.json()
-                title = data.get("title") or "Unknown YouTube Video"
-                is_live = data.get("liveNow", False)
-                duration = data.get("lengthSeconds", 0)
-                
-                # Construct a proxied stream URL to bypass YouTube IP restrictions (no 403 Forbidden)
-                stream_url = f"https://{instance}/latest_version?id={video_id}&itag=140&local=true"
-                if await cls._validate_stream_url(client, stream_url):
-                    cls._working_invidious_instance = instance
-                    return stream_url, title, is_live, duration
-        except Exception as e:
-            logger.debug(f"Invidious async instance {instance} failed: {e}")
-        return None
-
-
-    @classmethod
-    def _extract_stream_url_fallback(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Try Invidious first (proxied), then Cobalt (direct), and return (stream_url, title, is_live, duration)."""
-        video_id = _extract_video_id(url)
-        if not video_id:
-            return None
-
-        # 1. Try Invidious first (returns a fully proxied stream URL to bypass 403 Forbidden)
-        logger.info(f"Attempting Invidious fallback for video: {video_id}")
-        invidious_res = cls._extract_via_invidious(video_id)
-        if invidious_res:
-            logger.info(f"Using Invidious proxied stream and metadata for {video_id}")
-            return invidious_res
-
-        # 2. If Invidious failed completely, try Cobalt direct (with empty metadata)
-        logger.info(f"Attempting direct Cobalt extraction for video: {video_id}")
-        cobalt_stream_url = cls._extract_via_cobalt(url)
-        if cobalt_stream_url:
-            return cobalt_stream_url, "Unknown YouTube Video", False, 0
-
-        return None
-
-    @classmethod
-    async def _extract_stream_url_fallback_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Try Invidious (proxied) and Cobalt (direct) concurrently and return first successful result."""
-        video_id = _extract_video_id(url)
-        if not video_id:
-            return None
-
-        logger.info(f"Attempting concurrent fallback stream extraction for video: {video_id}")
-        
-        invidious_instances = cls._get_invidious_instances()
-        cobalt_instances = cls._get_cobalt_instances()
-        
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            tasks = []
-            
-            # Queue Invidious extraction tasks
-            for inst in invidious_instances:
-                tasks.append(asyncio.create_task(cls._extract_via_invidious_async(client, inst, video_id)))
-                
-            # Queue Cobalt extraction tasks
-            for inst in cobalt_instances:
-                async def _cobalt_task_wrapper(c, i, u):
-                    stream_url = await cls._extract_via_cobalt_async(c, i, u)
-                    if stream_url:
-                        return stream_url, "Unknown YouTube Video", False, 0
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                resp = await client.get(
+                    endpoint, params={"id": video_id}, timeout=YTJS_TIMEOUT
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Local YouTube resolver returned HTTP %s for %s: %s",
+                        resp.status_code, video_id, resp.text[:200]
+                    )
                     return None
-                tasks.append(asyncio.create_task(_cobalt_task_wrapper(client, inst, url)))
-                
-            pending = set(tasks)
-            result = None
-            
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    try:
-                        res = task.result()
-                        if res:
-                            result = res
-                            break
-                    except Exception:
-                        pass
-                if result:
-                    break
-                    
-            for task in pending:
-                task.cancel()
-                
-            return result
+                data = resp.json()
+
+                stream_url = data.get("url")
+                if not stream_url:
+                    return None
+                title = data.get("title") or "Unknown YouTube Video"
+                is_live = bool(data.get("isLive"))
+                try:
+                    duration = int(data.get("duration") or 0)
+                except (TypeError, ValueError):
+                    duration = 0
+
+                # A resolved googlevideo URL can still 403 from a datacenter IP,
+                # which is what made the old public fallbacks useless. Confirm
+                # it actually yields bytes before handing it to FFmpeg, so a
+                # dead URL loses the extraction race instead of winning it and
+                # producing silence. Live manifests are skipped: HLS/DASH
+                # playlists are handled by FFmpeg, not read as a byte stream.
+                if not is_live and not await cls._validate_stream_url(client, stream_url):
+                    logger.warning(
+                        "Local YouTube resolver returned an unplayable stream for %s",
+                        video_id,
+                    )
+                    return None
+        except httpx.ConnectError:
+            logger.error(
+                "Local YouTube resolver is not reachable on %s:%s. Start it with "
+                "run_windows.bat, or `supervisorctl start dcbot-ytjs` on the server.",
+                YTJS_SERVER_HOST, YTJS_SERVER_PORT,
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"Local YouTube resolver failed for {video_id}: {e}")
+            return None
+
+        logger.info("Local YouTube resolver resolved %s (%r)", video_id, title)
+        return stream_url, title, is_live, duration, None
 
     @classmethod
-    def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
-        """Extract stream URL using yt-dlp as primary method, with Cobalt/Invidious as fallbacks. Blocking."""
+    def _extract_stream_url_fallback(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
+        """Blocking wrapper around the local resolver fallback."""
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return None
+        try:
+            return asyncio.run(cls._extract_via_ytjs_async(video_id))
+        except RuntimeError:
+            # Already inside a running loop; the async path should be used there.
+            logger.warning("_extract_stream_url_fallback called from a running loop")
+            return None
+
+    @classmethod
+    async def _extract_stream_url_fallback_async(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
+        """Resolve a stream via the local youtubei.js resolver."""
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return None
+        logger.info(f"Attempting local resolver fallback for video: {video_id}")
+        return await cls._extract_via_ytjs_async(video_id)
+
+    @classmethod
+    def _ydl_extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
+        """Extract stream URL using yt-dlp as primary method, with the local resolver as fallback. Blocking."""
         logger.info(f"Attempting primary stream extraction via yt-dlp for: {url}")
         ydl_opts = get_ydl_opts({
             'format': 'bestaudio/best',
@@ -622,14 +696,15 @@ class YouTubeHandler:
                     title = info.get('title', 'Unknown YouTube Video')
                     is_live = info.get('is_live', False) or info.get('live_status') == 'is_live'
                     duration = info.get('duration', 0)
+                    http_headers = info.get('http_headers')
                     if stream_url:
                         logger.info(f"yt-dlp stream extraction succeeded for: {url}")
-                        return stream_url, title, is_live, duration
+                        return stream_url, title, is_live, duration, http_headers
             except Exception as e:
                 logger.error(f"yt-dlp extract_stream_url failed: {e}")
 
         # If yt-dlp fails (e.g. cookie expires or network block), try Invidious/Cobalt public fallbacks
-        logger.info("yt-dlp extraction failed. Trying Invidious/Cobalt public API fallbacks...")
+        logger.info("yt-dlp extraction failed. Trying the local youtubei.js resolver...")
         fallback = cls._extract_stream_url_fallback(url)
         if fallback:
             return fallback
@@ -637,7 +712,7 @@ class YouTubeHandler:
         return None
 
     @classmethod
-    def _ydl_extract_stream_url_only(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+    def _ydl_extract_stream_url_only(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
         """Extract stream URL using yt-dlp only (blocking, no fallbacks)."""
         logger.info(f"Attempting primary stream extraction via yt-dlp only for: {url}")
         ydl_opts = get_ydl_opts({
@@ -653,34 +728,49 @@ class YouTubeHandler:
                     title = info.get('title', 'Unknown YouTube Video')
                     is_live = info.get('is_live', False) or info.get('live_status') == 'is_live'
                     duration = info.get('duration', 0)
+                    http_headers = info.get('http_headers')
                     if stream_url:
                         logger.info(f"yt-dlp stream extraction succeeded for: {url}")
-                        return stream_url, title, is_live, duration
+                        return stream_url, title, is_live, duration, http_headers
             except Exception as e:
-                logger.debug(f"yt-dlp extract_stream_url_only failed: {e}")
+                logger.warning(f"yt-dlp extract_stream_url_only failed: {e}")
         return None
 
     @classmethod
-    async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+    async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
         """Extract stream URL concurrently racing yt-dlp (with cookies) and fast public fallbacks for sub-second response times."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
-        
-        loop = asyncio.get_event_loop()
-        
-        # 1. Start primary yt-dlp extraction with a short cap. With cookies
-        # loaded, yt-dlp usually resolves a direct googlevideo URL in 2-4s;
-        # the Invidious/Cobalt fallbacks race alongside and win when they are
-        # faster. The cap must be long enough for yt-dlp to actually finish on
-        # servers where every public fallback instance is down/rate-limited.
+
+        # 1. Start primary yt-dlp extraction. The fallbacks race alongside and
+        # win whenever they are faster, so start latency is decided by the
+        # race, NOT by this timeout -- it exists only as a safety net so a
+        # wedged extraction cannot hang playback forever. Keep it comfortably
+        # above yt-dlp's normal latency: capping below that made yt-dlp lose
+        # every race and forced playback onto the public instances, which fail
+        # outright when they are all down or rate-limited.
         async def _yt_dlp_task():
             try:
                 return await asyncio.wait_for(
-                    loop.run_in_executor(None, cls._ydl_extract_stream_url_only, url),
-                    timeout=2.5
+                    asyncio.get_running_loop().run_in_executor(
+                        _YDL_EXECUTOR, cls._ydl_extract_stream_url_only, url
+                    ),
+                    timeout=_YDL_EXTRACT_TIMEOUT
                 )
-            except Exception:
+            except asyncio.TimeoutError:
+                # NOTE: wait_for cannot cancel a thread already running in the
+                # executor -- it keeps going until yt-dlp returns. That is why
+                # _YDL_EXECUTOR is dedicated and bounded: abandoned extractions
+                # can no longer accumulate in the default pool and starve every
+                # other blocking call the bot makes.
+                logger.warning(
+                    "yt-dlp extraction exceeded %.1fs for %s; relying on fallback",
+                    _YDL_EXTRACT_TIMEOUT, url
+                )
+                return None
+            except Exception as e:
+                logger.warning(f"yt-dlp race task failed: {e}")
                 return None
 
         # 2. Start fallback extraction concurrently
@@ -710,7 +800,7 @@ class YouTubeHandler:
 
 
     @classmethod
-    def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int]]:
+    def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
         """Synchronous wrapper for stream extraction.
         
         Kept for backward compat with code that calls this from a thread executor.
@@ -785,47 +875,27 @@ class YouTubeHandler:
                 meta = await cls.extract_stream_url_async(query)
                 if not meta:
                     return None, None
-                stream_url, title, is_live, duration = meta
+                stream_url, title, is_live, duration, *extra = meta
+                http_headers = extra[0] if extra else None
                 
-                ffmpeg_options = "-vn -flags low_delay"
-                filters = []
-                if eq_preset:
-                    if eq_preset == "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    elif eq_preset == "vocal":
-                        filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                    elif eq_preset == "treble":
-                        filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                    elif eq_preset == "lofi":
-                        filters.append("highpass=f=300,lowpass=f=4000")
-                    elif eq_preset == "acoustic":
-                        filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
-
-                if effects:
-                    if "bassboost" in effects and eq_preset != "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    if "nightcore" in effects:
-                        filters.append("asetrate=48000*1.25")
-                filters.append("aresample=osr=48000:osf=s16")
-                ffmpeg_options += f' -af "{",".join(filters)}"'
+                ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
 
                 try:
                     source_path = stream_url
-                    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\" -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                    if seek and seek > 0:
-                        ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                    source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                    source.temp_file_path = None
+                    http_before = build_http_before_options(http_headers)
+                    ffmpeg_before_options = apply_seek(http_before, seek)
+                    source = make_stream_source(source_path, ffmpeg_before_options, ffmpeg_options)
                     return source, title
                 except Exception as fe:
                     logger.warning(f"Direct stream creation failed: {fe}. Falling back to tempfile download...")
                     temp_path = await cls._download_stream_to_tempfile(stream_url)
                     if temp_path:
-                        ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                        if seek and seek > 0:
-                            ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                        source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                        source.temp_file_path = temp_path
+                        source = make_stream_source(
+                            temp_path,
+                            apply_seek(_FILE_BEFORE_OPTIONS, seek),
+                            ffmpeg_options,
+                            temp_file_path=temp_path,
+                        )
                         return source, title
                     return None, None
             else:
@@ -848,52 +918,31 @@ class YouTubeHandler:
             if not meta:
                 return None, None
             
-            stream_url, title, is_live, duration = meta
+            stream_url, title, is_live, duration, *extra = meta
+            http_headers = extra[0] if extra else None
             # When a public fallback (Invidious/Cobalt) wins the extraction race
             # it may not carry a title; prefer the search-result title then.
             if not title or title == "Unknown YouTube Video":
                 title = song.get("title") or song.get("song") or title
             
-            ffmpeg_options = "-vn -flags low_delay"
-            filters = []
-            if eq_preset:
-                if eq_preset == "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                elif eq_preset == "vocal":
-                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                elif eq_preset == "treble":
-                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                elif eq_preset == "lofi":
-                    filters.append("highpass=f=300,lowpass=f=4000")
-                elif eq_preset == "acoustic":
-                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
-
-            if effects:
-                if "bassboost" in effects and eq_preset != "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                if "nightcore" in effects:
-                    filters.append("asetrate=48000*1.25")
-            
-            filters.append("aresample=osr=48000:osf=s16")
-            ffmpeg_options += f' -af "{",".join(filters)}"'
+            ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
 
             try:
                 source_path = stream_url
-                ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\" -nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                if seek and seek > 0:
-                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                source.temp_file_path = None
+                http_before = build_http_before_options(http_headers)
+                ffmpeg_before_options = apply_seek(http_before, seek)
+                source = make_stream_source(source_path, ffmpeg_before_options, ffmpeg_options)
                 return source, title
             except Exception as fe:
                 logger.warning(f"Direct stream creation failed: {fe}. Falling back to tempfile download...")
                 temp_path = await cls._download_stream_to_tempfile(stream_url)
                 if temp_path:
-                    ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                    if seek and seek > 0:
-                        ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                    source = discord.FFmpegPCMAudio(temp_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                    source.temp_file_path = temp_path
+                    source = make_stream_source(
+                        temp_path,
+                        apply_seek(_FILE_BEFORE_OPTIONS, seek),
+                        ffmpeg_options,
+                        temp_file_path=temp_path,
+                    )
                     return source, title
                 return None, None
         except Exception as e:

@@ -1,0 +1,14 @@
+{
+  "name": "dcbot-ytjs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local YouTube stream resolver for dcBot, used as the fallback when yt-dlp cannot extract a stream.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "youtubei.js": "^18.0.0"
+  }
+}
