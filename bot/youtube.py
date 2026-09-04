@@ -738,65 +738,29 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
-        """Extract stream URL concurrently racing yt-dlp (with cookies) and fast public fallbacks for sub-second response times."""
+        """Extract with yt-dlp first, using ytjs only when primary extraction fails."""
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
 
-        # 1. Start primary yt-dlp extraction. The fallbacks race alongside and
-        # win whenever they are faster, so start latency is decided by the
-        # race, NOT by this timeout -- it exists only as a safety net so a
-        # wedged extraction cannot hang playback forever. Keep it comfortably
-        # above yt-dlp's normal latency: capping below that made yt-dlp lose
-        # every race and forced playback onto the public instances, which fail
-        # outright when they are all down or rate-limited.
-        async def _yt_dlp_task():
-            try:
-                return await asyncio.wait_for(
-                    asyncio.get_running_loop().run_in_executor(
-                        _YDL_EXECUTOR, cls._ydl_extract_stream_url_only, url
-                    ),
-                    timeout=_YDL_EXTRACT_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                # NOTE: wait_for cannot cancel a thread already running in the
-                # executor -- it keeps going until yt-dlp returns. That is why
-                # _YDL_EXECUTOR is dedicated and bounded: abandoned extractions
-                # can no longer accumulate in the default pool and starve every
-                # other blocking call the bot makes.
-                logger.warning(
-                    "yt-dlp extraction exceeded %.1fs for %s; relying on fallback",
-                    _YDL_EXTRACT_TIMEOUT, url
-                )
-                return None
-            except Exception as e:
-                logger.warning(f"yt-dlp race task failed: {e}")
-                return None
-
-        # 2. Start fallback extraction concurrently
-        ydl_task = asyncio.create_task(_yt_dlp_task())
-        fallback_task = asyncio.create_task(cls._extract_stream_url_fallback_async(url))
-        
-        pending = {ydl_task, fallback_task}
-        result = None
-        
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                try:
-                    res = task.result()
-                    if res:
-                        result = res
-                        break
-                except Exception:
-                    pass
+        try:
+            result = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    _YDL_EXECUTOR, cls._ydl_extract_stream_url_only, url
+                ),
+                timeout=_YDL_EXTRACT_TIMEOUT,
+            )
             if result:
-                break
-                
-        for task in pending:
-            task.cancel()
-            
-        return result
+                return result
+        except asyncio.TimeoutError:
+            logger.warning(
+                "yt-dlp extraction exceeded %.1fs for %s; trying ytjs fallback",
+                _YDL_EXTRACT_TIMEOUT, url,
+            )
+        except Exception as e:
+            logger.warning("yt-dlp extraction failed: %s; trying ytjs fallback", e)
+
+        return await cls._extract_stream_url_fallback_async(url)
 
 
     @classmethod

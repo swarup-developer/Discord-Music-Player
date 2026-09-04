@@ -7,8 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A local YouTube stream resolver (`ytjs/`, Node + youtubei.js) that runs beside
+  the POT server on `127.0.0.1:4417` and is now the fallback used when yt-dlp
+  cannot extract a stream. Startup reports whether it is listening.
+- Startup check that reports, by name, which YouTube authentication cookies are
+  missing from `cookies.txt`. An export taken from a signed-out browser profile
+  looks valid but makes YouTube reject every extraction with "Sign in to
+  confirm you're not a bot", which previously surfaced only as a generic
+  playback failure. Only cookie names are read; values are never logged.
+- The PO Token provider check now probes port 4416 as well as importing the
+  yt-dlp plugin. The two fail independently, so a loaded plugin alone never
+  proved the provider was actually reachable.
+- Playback now logs the EQ preset, effects and volume in force for each track,
+  so unexpected audio processing can be traced to persisted server settings.
+- `fix_pot.bat` — one-step repair and verification for the PO Token provider on
+  Windows. Syncs dependencies (`uv`, with a pip fallback), then verifies that
+  the yt-dlp plugin is importable and reports whether the POT server is
+  listening on port 4416.
+- Startup diagnostic that logs an explicit error when the PO Token provider
+  plugin is missing, instead of letting YouTube playback degrade silently.
+
+### Changed
+
+- Deployment is now incremental: only eligible changed source files are uploaded.
+  Documentation, logs, credentials, caches, private audio, and generated files
+  remain local.
+- Deployment now checks installed dependencies before running package managers,
+  so healthy VPS installations are not reinstalled on every deploy.
+- YouTube extraction now tries yt-dlp first and uses the local ytjs resolver only
+  when the primary extractor fails, keeping normal playback logs clean.
+
+- **YouTube extraction no longer falls back to public Invidious/Cobalt
+  instances.** Every instance in the list was offline, rate-limited, redirecting
+  or returning a stream with zero bytes, so the fallback was guaranteed to fail
+  in exactly the situation it existed for. Extraction now falls back to a local
+  resolver that talks to YouTube's own API from the same machine, and the
+  resolved URL is checked for actual audio bytes before playback uses it.
+- The equalizer presets now live in one place instead of being duplicated
+  across every provider, so a preset cannot drift between YouTube, JioSaavn,
+  SoundCloud and local playback.
+
 ### Fixed
 
+- **Rewind/Forward and EQ changes are now near-instant.** Seeking rebuilt the
+  track from scratch — provider search plus a fresh stream extraction — before
+  restarting playback, so each ±10s press waited seconds on the network. The
+  resolved stream is now reused and only FFmpeg restarts; a full re-resolve
+  happens solely when the cached stream is no longer usable.
+- **Silent stop after seeking or changing an audio setting.** Both actions stop
+  the current track before rebuilding it, with queue advancement disabled, so a
+  failed rebuild left the bot quiet with no message anywhere and nothing to
+  play next. The failure is now reported in chat and logged with the provider
+  and track.
+
+- **YouTube playback reliability** (intermittent silent failures):
+  - `bgutil-ytdlp-pot-provider` is now declared as a project dependency. The POT
+    server was being started while the yt-dlp client plugin was absent from the
+    dependency list, so dependency syncs removed it and yt-dlp ran without a PO
+    token — making extraction slow and prone to failing outright.
+  - Raised the yt-dlp extraction cap from 2.5s, which sat below yt-dlp's normal
+    latency and so caused it to lose every extraction race and forced playback
+    onto public fallback instances. Start latency is unchanged: it is decided by
+    the extraction race, and the cap now only prevents a wedged extraction from
+    hanging playback.
+  - Blocking yt-dlp extractions now run on a dedicated bounded thread pool. A
+    timeout cannot cancel a thread that is already running, so abandoned
+    extractions accumulated in the shared pool and progressively starved other
+    blocking work the longer the bot ran.
 - **Playback Controller Next/Previous buttons** now work reliably:
   - `after`-playback callbacks are generation-guarded, so a stopped track can no
     longer overwrite the state of a newer track during Next/Prev/seek/reload.
@@ -22,11 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Spotify links are accepted directly by `/play`.
 - **Audio streaming lag**: removed the artificial per-frame sleep in the audio
   wrapper that throttled playback below real time and caused lag/stutter.
-- **YouTube playback**:
-  - Extended the yt-dlp extraction window so direct stream extraction can finish
-    when public fallback instances are unavailable.
-  - Fall back to the search-result title when a fallback extraction returns no
-    metadata (no more "Unknown YouTube Video" titles).
+- **YouTube metadata**: fall back to the search-result title when a fallback
+  extraction returns no metadata (no more "Unknown YouTube Video" titles).
 - **JioSaavn**:
   - Song links of the form `/song/<slug>/<token>` now extract the correct token
     and play (previously the slug was used and playback failed).
