@@ -1,7 +1,8 @@
 #!/bin/bash
 # ==============================================================================
 # dcBot Host Setup Script
-# Automatically configures Python, Node, Deno, POT Server, and Supervisor.
+# Automatically configures Python, Node, Deno, POT Server, Cloudflare WARP,
+# the YouTube resolver, the automatic cookie refresher, and Supervisor.
 # ==============================================================================
 
 set -euo pipefail
@@ -32,10 +33,16 @@ apt-get update -y && apt-get upgrade -y
 echo "--> Installing core dependencies (curl, git, ffmpeg, supervisor)..."
 apt-get install -y curl git ffmpeg supervisor python3 python3-pip python3-venv build-essential lsof
 
-# 3. Install Node.js (v20 LTS)
-if ! command -v node &> /dev/null; then
-  echo "--> Installing Node.js..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# 3. Install Node.js 22 LTS. The YouTube resolver routes its traffic through
+#    YOUTUBE_PROXY with NODE_USE_ENV_PROXY, which needs Node >= 22.21; on older
+#    Node the proxy is silently ignored and YouTube blocks the server again.
+NODE_OK=0
+if command -v node &> /dev/null; then
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=21)?0:1)' && NODE_OK=1
+fi
+if [ "$NODE_OK" -eq 0 ]; then
+  echo "--> Installing Node.js 22..."
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 else
   echo "--> Node.js already installed ($(node -v))"
@@ -71,26 +78,67 @@ sudo -u "$USER_NAME" python3 -m venv .venv
 
 echo "--> Installing Python dependencies..."
 sudo -u "$USER_NAME" .venv/bin/pip install --upgrade pip setuptools wheel
-sudo -u "$USER_NAME" .venv/bin/pip install \
-  "discord.py[voice]>=2.7.1" \
-  "python-dotenv>=0.9.9" \
-  "httpx>=0.28.1" \
-  "websockets>=12.0" \
-  "pycryptodome>=3.23.0" \
-  "pynacl>=1.5.0" \
-  "paramiko>=5.0.0" \
-  "yt-dlp>=2026.6.9" \
-  "bgutil-ytdlp-pot-provider>=1.3.1"
+sudo -u "$USER_NAME" .venv/bin/pip install -r requirements.txt
 
-# 7. Install the local YouTube resolver (youtubei.js) used as the extraction
-#    fallback. It replaced the public Invidious/Cobalt instances, which were all
-#    offline or serving empty streams.
-echo "--> Installing local YouTube resolver dependencies (ytjs)..."
+# 7. Install the local YouTube resolver (youtubei.js, primary YouTube path) and
+#    the headless Chromium used by the automatic cookie refresher.
+echo "--> Installing YouTube resolver + cookie refresher dependencies (ytjs)..."
 cd "$BOT_DIR/ytjs"
 sudo -u "$USER_NAME" npm install
+sudo -u "$USER_NAME" npx playwright install chromium
+npx playwright install-deps chromium
 cd "$BOT_DIR"
 
-# 8. Create Supervisor Configuration Files
+# 8. Cloudflare WARP in proxy mode (127.0.0.1:40000). YouTube blocks most
+#    datacenter IPs; routing only YouTube traffic through WARP fixes that
+#    without any cookies. Proxy mode leaves SSH and all other traffic alone.
+echo "--> Installing Cloudflare WARP (proxy mode)..."
+if ! command -v warp-cli &> /dev/null; then
+  curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/cloudflare-client.list
+  apt-get update -y && apt-get install -y cloudflare-warp
+fi
+warp-cli --accept-tos registration show &> /dev/null || warp-cli --accept-tos registration new
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy port 40000
+warp-cli --accept-tos connect
+
+# Make sure .env exists and points YouTube traffic at WARP.
+if [ ! -f "$BOT_DIR/.env" ]; then
+  sudo -u "$USER_NAME" cp "$BOT_DIR/.env.example" "$BOT_DIR/.env"
+fi
+grep -q '^YOUTUBE_PROXY=' "$BOT_DIR/.env" || echo 'YOUTUBE_PROXY=http://127.0.0.1:40000' >> "$BOT_DIR/.env"
+
+# 9. Automatic cookie refresher (systemd, low priority). Every few hours a
+#    headless Chromium opens YouTube through WARP and atomically replaces
+#    cookies.txt -- nobody has to export cookies by hand.
+echo "--> Installing the automatic cookie refresher service..."
+cat <<EOF > /etc/systemd/system/dcbot-cookies.service
+[Unit]
+Description=dcBot YouTube cookie refresher
+After=network-online.target warp-svc.service
+Wants=network-online.target
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$BOT_DIR/ytjs
+ExecStart=$(command -v node) $BOT_DIR/ytjs/cookie_refresher.mjs
+Restart=always
+RestartSec=30
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=450M
+StandardOutput=append:$BOT_DIR/ytjs/cookies.out.log
+StandardError=append:$BOT_DIR/ytjs/cookies.err.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now dcbot-cookies
+
+# 10. Create Supervisor Configuration Files
 echo "--> Generating Supervisor configuration files..."
 
 # Supervisor config for POT Server
@@ -130,7 +178,7 @@ stderr_logfile=$BOT_DIR/err.log
 stdout_logfile=$BOT_DIR/out.log
 EOF
 
-# 9. Reload and Start services via Supervisor
+# 11. Reload and Start services via Supervisor
 echo "--> Restarting Supervisor services..."
 supervisorctl reread
 supervisorctl update
@@ -141,8 +189,7 @@ supervisorctl restart dcbot
 echo "===================================================="
 echo " Setup complete!"
 echo " Next Steps for the User:"
-echo " 1. Create a '.env' file in '$BOT_DIR' with your DISCORD_TOKEN."
-echo " 2. Log into your dedicated YouTube account, export the cookies"
-echo "    in Netscape format, save them as 'cookies.txt' in '$BOT_DIR'."
-echo " 3. Restart the bot using: sudo supervisorctl restart dcbot"
+echo " 1. Put your DISCORD_TOKEN in '$BOT_DIR/.env'."
+echo " 2. Restart the bot using: sudo supervisorctl restart dcbot"
+echo " No cookies needed: WARP + the automatic cookie refresher handle YouTube."
 echo "===================================================="

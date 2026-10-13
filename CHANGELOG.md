@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2026-10-13] - YouTube Music & automatic cookies
+
+YouTube Music, a much faster YouTube path, and no more manual cookies.
+
+### Added
+
+- **YouTube Music provider.** `/provider` now offers YouTube Music, which
+  searches official songs instead of videos (no music-video intros). Spotify
+  tracks are matched on YouTube Music too.
+- **Automatic cookie refresher** (`ytjs/cookie_refresher.mjs`, systemd service
+  `dcbot-cookies`). A headless Chromium on the server opens YouTube every
+  `COOKIE_REFRESH_HOURS` (default 6) and atomically replaces `cookies.txt`.
+  Runs at the lowest CPU/IO priority, capped at 450 MB RAM and 50% CPU.
+- **`YOUTUBE_PROXY` setting.** Routes all YouTube traffic (resolver, yt-dlp,
+  FFmpeg) through a proxy. `setup.sh` installs Cloudflare WARP in proxy mode
+  (`127.0.0.1:40000`) and sets it, which gets past "Sign in to confirm you're
+  not a bot" on datacenter IPs without any cookies.
+- Dead cookie files are retired automatically: a signed-out or expired
+  `cookies.txt` is renamed to `cookies.txt.invalid` instead of being used.
+- The resolver reloads `cookies.txt` on change, without a restart.
+- `requirements.txt` and `.env.example`.
+
+### Changed
+
+- **YouTube is 3-10x faster.** The local youtubei.js resolver is now the
+  primary path (search ~0.7 s, stream ~0.5-2 s) instead of a fallback; yt-dlp
+  (~5 s per track) is only used when the resolver fails. The resolver keeps
+  one warm session, deduplicates concurrent requests and caches stream URLs.
+- **JioSaavn search** uses `search.getResults` again (it works again), with
+  autocomplete as the fallback. Ranking now prefers the exact original song,
+  merges compilation re-uploads of the same recording, pushes covers and
+  lofi/slowed/remix versions down unless asked for, and puts newer songs first
+  among equal matches. The duplicate base request was removed.
+- The plain YouTube provider was replaced by YouTube Music; saved "youtube"
+  settings switch over automatically. YouTube links still play.
+- `setup.sh` now installs Node.js 22, WARP, Playwright Chromium and the cookie
+  refresher, and installs Python packages from `requirements.txt`.
+- README: new "Automatic YouTube Cookies" and "How YouTube Playback Works"
+  sections; outdated Invidious/Cobalt and manual-cookie instructions replaced.
+
+### Fixed
+
+- Tracks that went silent after about a second: stream URLs were only checked
+  for their first 1 KB, while YouTube refused everything past ~1 MB. URLs are
+  now checked deep inside the file, with a fallback to a fully playable format.
+- The youtubei.js resolver never worked: dependencies were not installed, it
+  had no JavaScript evaluator for deciphering, and it tried a client that
+  returns no usable URLs first.
+- YouTube search crashed when earlier search methods returned nothing (it
+  called a removed Invidious helper).
+- Playing a local file picked from search results crashed (tuple unpacking).
+- yt-dlp overwrote the shared `cookies.txt` with its own jar; it now works on a
+  private copy.
+- `setup.sh` installed Node 20, which silently ignores the proxy settings the
+  resolver needs (requires Node >= 22.21).
+- `deploy.py` printed the sudo password in its output.
+
+### Removed
+
+- Dead Invidious search code and README instructions for the defunct
+  Invidious/Cobalt fallbacks.
+
+## [2026-09-04]
+
 ### Added
 
 - A local YouTube stream resolver (`ytjs/`, Node + youtubei.js) that runs beside
