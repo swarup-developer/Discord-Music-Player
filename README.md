@@ -26,8 +26,8 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 - **No manual cookies on a server.** YouTube traffic goes through Cloudflare WARP, and a background service keeps cookies fresh automatically.
 - **Live TV and radio.** Thousands of public TV channels and radio stations. Offline TV channels are detected and hidden.
 - **Your own files.** Play audio files from your phone or computer. They are streamed from Discord and never stored on the server.
-- **Accessible controller.** Play, pause, seek, skip, filters and volume, with plain-text labels that work with screen readers (NVDA, JAWS, Narrator, VoiceOver, TalkBack).
-- **Saved settings.** Volume, provider, loop mode and audio effects are remembered per server.
+- **Accessible controller.** Previous, -10s, pause, +10s, next, loop, shuffle, clear queue, volume and an equalizer menu, with plain-text labels that work with screen readers (NVDA, JAWS, Narrator, VoiceOver, TalkBack).
+- **Saved settings.** Volume, provider, loop mode, audio effects and equalizer preset are remembered per server.
 - **Startup sound.** Optionally plays `audio/audio.mp3` when the bot joins a voice channel. Files in `audio/` are ignored by git.
 
 ## Create the Discord bot
@@ -41,7 +41,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 
 ## Hosting on Linux
 
-Tested on Ubuntu 22.04. The installer sets up Python, Node.js 22, Deno, FFmpeg, Supervisor, the PO token server, the YouTube resolver, Cloudflare WARP and the cookie refresher.
+Written for Ubuntu 22.04. The installer sets up Python, Node.js 22, Deno, FFmpeg, Supervisor, the PO token server, the YouTube resolver, Cloudflare WARP and the cookie refresher.
 
 ```bash
 git clone https://github.com/swarup-developer/Discord-Music-Player.git
@@ -70,7 +70,7 @@ Useful service commands:
 | `systemctl status dcbot-cookies` | Check the cookie refresher |
 | `warp-cli --accept-tos status` | Check Cloudflare WARP |
 
-To update an existing installation, pull the latest code and run `sudo bash setup.sh` again. It is safe to re-run.
+To update an existing installation, pull the latest code and run `sudo bash setup.sh` again.
 
 ## Hosting on Windows
 
