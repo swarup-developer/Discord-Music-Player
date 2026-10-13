@@ -1,32 +1,11 @@
 [
-    {
-        "name": "Bollywood Hits (Indian)",
-        "url": "http://108.61.34.50:7042/;stream.mp3",
-        "category": "Bollywood"
-    },
-    {
-        "name": "Lofi Hip Hop (ChilledCow)",
-        "url": "https://play.streamafrica.com/lofi-hiphop",
-        "category": "Lofi"
-    },
-    {
-        "name": "Synthwave Retro Radio",
-        "url": "http://185.33.21.112:80/retro_synthwave",
-        "category": "Synthwave"
-    },
-    {
-        "name": "BBC Radio 1 (UK)",
-        "url": "http://stream.live.vc.bbc.co.uk/bbc_radio_one",
-        "category": "News/Pop"
-    },
-    {
-        "name": "Classic Rock Radio",
-        "url": "http://185.33.21.112:80/rock_block",
-        "category": "Rock"
-    },
-    {
-        "name": "Smooth Jazz Radio",
-        "url": "http://185.33.21.112:80/smooth_jazz",
-        "category": "Jazz"
-    }
+    {"name": "Vividh Bharati (All India Radio)", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio001/playlist.m3u8", "category": "Bollywood"},
+    {"name": "Radio Mirchi Hindi", "url": "https://eu8.fastcast4u.com/proxy/clyedupq/stream", "category": "Bollywood"},
+    {"name": "Mirchi Top 20", "url": "https://drive.uber.radio/uber/bollywoodnow/icecast.audio", "category": "Bollywood"},
+    {"name": "Mirchi Love", "url": "https://drive.uber.radio/uber/bollywoodlove/icecast.audio", "category": "Romantic"},
+    {"name": "Hindi Gold Radio", "url": "https://azuracast.vibesounds.in:8010/radio.mp3", "category": "Old Hindi"},
+    {"name": "Bollywood Gaane Purane", "url": "https://stream.zeno.fm/6n6ewddtad0uv", "category": "Old Hindi"},
+    {"name": "Lofi 24/7", "url": "http://usa9.fastcast4u.com/proxy/jamz?mp=/1", "category": "Lofi"},
+    {"name": "101 Smooth Jazz", "url": "http://jking.cdnstream1.com/b22139_128mp3", "category": "Jazz"},
+    {"name": "Classic Rock 70s 80s 90s", "url": "https://cast1.torontocast.com:4610/stream", "category": "Rock"}
 ]

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2026-10-13] - Live TV, radio and your own files
+
+### Added
+
+- `/local upload` and a right-click message menu (Apps -> Play audio files):
+  play up to 10 audio files from your device. Files are streamed from
+  Discord and never stored on the server.
+- `/remove` drops a song from the queue by its number.
+- `/radio search` and a live `/radio list` backed by Radio Browser, with the
+  bundled presets as an offline fallback.
+- Background health check for TV streams (India first, every 12 hours). Dead
+  channels are hidden from browse, search and play.
+
+### Fixed
+
+- `/tv browse` crashed after choosing a country, and `/tv play` crashed with a
+  country (`COUNTRY_NAME_TO_CODE` was never defined).
+- Every Indian TV channel was labelled Hindi; real languages are used now.
+- Streams that need a specific User-Agent or Referer (711 channels) now play.
+- News channels such as India TV and News18 played no audio (FFmpeg probe too
+  small for HLS); live HLS streams now get a larger probe.
+- The bot said "Now streaming" even when a stream failed, and showed URL parts
+  such as `index.m3u8` instead of the channel or station name.
+- Radio servers that refuse HEAD requests were reported unreachable.
+- Radio menus broke on stream URLs longer than 100 characters.
+- Dead radio presets replaced with tested stations.
+- httpx no longer logs every request.
+
+
 ## [2026-10-13] - YouTube Music & automatic cookies
 
 YouTube Music, a much faster YouTube path, and no more manual cookies.

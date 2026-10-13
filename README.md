@@ -176,6 +176,7 @@ Type "/" in your Discord server to see the commands:
 *   /search [query] - Search for songs on your current provider.
 *   /provider - Set the default music provider (YouTube Music / JioSaavn / SoundCloud / Spotify / Local Files).
 *   /queue - Shows what songs are playing next.
+*   /remove [number] - Removes a song from the queue (number as shown in /queue).
 *   /lyrics [song] - Looks up lyrics for the current or a searched song.
 *   /volume [0-100] - Adjusts the music volume.
 *   /skip - Skips the current song.
@@ -192,16 +193,23 @@ Type "/" in your Discord server to see the commands:
 
 ### 📺 IPTV Live TV Commands
 *   /tv browse - Browse live TV feeds using a step-by-step selection flow (Language -> Country -> Category).
-*   /tv play [channel] - Play a specific live TV channel by name.
+*   /tv play [channel] - Play a specific live TV channel by name (best working match).
 *   /tv search [query] - Search TV channels and select one from the list.
 
+Channels come from the public [iptv-org](https://github.com/iptv-org/iptv) directory. The bot checks every stream in the background (India first, every 12 hours) and hides dead channels. Paid channels that have no free public stream (for example Star Plus) are not available.
+
 ### 📻 Internet Radio Commands
-*   /radio list - List pre-configured radio stations.
+*   /radio list [country] - Most-played working stations (India by default, or a two-letter country code).
+*   /radio search [query] - Find stations by name or genre (e.g. Mirchi, Bollywood, lofi, jazz).
 *   /radio play [url] - Play a custom radio stream URL.
 
-### 📁 Local Audio Commands
-*   /local list - List available local files in the `audio/` directory.
-*   /local play [filename] - Play a local audio file.
+Stations come from [Radio Browser](https://www.radio-browser.info), a free directory that checks streams daily. If it is unreachable, the bot falls back to `bot/radio_stations.json`.
+
+### 📁 Your Own Files
+*   /local upload - Play up to 10 audio files from your device. They are streamed from Discord and never stored on the server.
+*   Right-click a message with audio files -> Apps -> **Play audio files** - plays every file attached to it. Drop up to 10 files into the chat at once (select all in a folder).
+*   /local list - List audio files in the server's `audio/` directory.
+*   /local play [filename] - Play a file from the server's `audio/` directory.
 
 ---
 

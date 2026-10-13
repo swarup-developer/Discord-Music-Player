@@ -15,7 +15,8 @@ from .youtube import YouTubeHandler
 from .soundcloud import SoundCloudHandler
 from .spotify import SpotifyHandler
 from .local_files import LocalFileHandler
-from .tv import IPTVManager, CountrySelectView, IPTVChannelView, LanguageSelectView
+from .tv import IPTVManager, CountrySelectView, IPTVChannelView, LanguageSelectView, best_channel_match
+from . import radio as radio_directory
 from .state import BotState, QueueItem
 from .audio_source import JitterBuffer, apply_seek, build_ffmpeg_options, make_stream_source
 from .search import search_songs
@@ -26,6 +27,35 @@ _FILE_BEFORE_OPTIONS = "-nostdin -probesize 100000 -analyzeduration 100000 -ffla
 _HTTP_BEFORE_OPTIONS = (
     "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 " + _FILE_BEFORE_OPTIONS
 )
+
+RADIO_PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_stations.json")
+# Audio/video files a user can hand the bot from their own device.
+UPLOAD_EXTENSIONS = {".mp3", ".wav", ".ogg", ".oga", ".opus", ".flac", ".m4a", ".aac", ".wma", ".mp4", ".webm", ".mkv", ".mov"}
+MAX_UPLOAD_FILES = 10
+
+
+def _http_before_options(url: str) -> str:
+    """FFmpeg input options for a direct stream, with any headers it needs."""
+    extra = ""
+    headers = IPTVManager.headers_for_url(url)
+    if headers.get("User-Agent"):
+        extra += '-user_agent "%s" ' % headers["User-Agent"].replace('"', "")
+    if headers.get("Referer"):
+        extra += '-headers "Referer: %s\r\n" ' % headers["Referer"].replace('"', "")
+    if ".m3u8" in url.lower():
+        # Live TV (HLS) carries audio inside video segments: with the 100 KB
+        # probe FFmpeg often finds no audio stream at all ("Output file does
+        # not contain any stream"). 1 MB fixed India TV / News18 in testing.
+        return extra + _HTTP_BEFORE_OPTIONS.replace(
+            "-probesize 100000 -analyzeduration 100000", "-probesize 1000000 -analyzeduration 2000000"
+        )
+    return extra + _HTTP_BEFORE_OPTIONS
+
+
+def _is_playable_upload(attachment: discord.Attachment) -> bool:
+    ext = os.path.splitext(attachment.filename or "")[1].lower()
+    ctype = (attachment.content_type or "").lower()
+    return ext in UPLOAD_EXTENSIONS or ctype.startswith(("audio/", "video/"))
 
 
 class QueueView(discord.ui.View):
@@ -191,11 +221,16 @@ class ProviderSelectionView(discord.ui.View):
 
 
 class RadioSelect(discord.ui.Select):
-    def __init__(self, presets: List[Dict[str, str]]):
-        options = [
-            discord.SelectOption(label=p["name"], value=p["url"], description=f"Category: {p['category']}", emoji="📻")
-            for p in presets
-        ]
+    def __init__(self, stations: List[Dict[str, Any]]):
+        options = []
+        for idx, st in enumerate(stations[:25]):
+            details = " · ".join(x for x in (st.get("language"), st.get("tags"), f"{st['bitrate']} kbps" if st.get("bitrate") else "") if x)
+            options.append(discord.SelectOption(
+                label=st["name"][:100],
+                # Index, not URL: option values are capped at 100 characters.
+                value=str(idx),
+                description=(details or st.get("category") or "Radio")[:100],
+            ))
         super().__init__(
             placeholder="Select a radio station to play...",
             min_values=1,
@@ -206,38 +241,37 @@ class RadioSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        selected_url = self.values[0]
-        preset_name = next((p["name"] for p in self.view.presets if p["url"] == selected_url), "Radio Station")
-        
+        station = self.view.stations[int(self.values[0])]
+
         music_cog = interaction.client.get_cog("MusicCog")
         if not music_cog:
             return
-            
+
         session = music_cog._session(interaction.guild.id)
         if not interaction.user.voice or not interaction.user.voice.channel:
             return await interaction.followup.send("You must be in a voice channel to play radio.", ephemeral=True)
-            
+
         if not session.voice_client:
             voice_client = await interaction.user.voice.channel.connect()
             music_cog.state.set_active(voice_client, interaction.user.voice.channel.id, interaction.channel.id, interaction.guild.id)
-            
-        title = f"📻 Radio: {preset_name}"
+
+        title = f"📻 Radio: {station['name']}"
+        asyncio.create_task(radio_directory.register_click(station.get("uuid")))
         is_playing = session.voice_client and (session.voice_client.is_playing() or session.voice_client.is_paused())
-        
+
         if is_playing:
             queue = music_cog.state.queue_for(interaction.guild.id)
-            queue.append(QueueItem(query=selected_url, title=title, requested_by=interaction.user.id))
-            await interaction.followup.send(f"Queued Radio: **{preset_name}**")
+            queue.append(QueueItem(query=station["url"], title=title, requested_by=interaction.user.id))
+            await interaction.followup.send(f"Queued Radio: **{station['name']}**")
         else:
-            await music_cog._play_audio(selected_url, interaction, title=title)
-            await interaction.followup.send(f"Now playing Radio: **{preset_name}**")
+            await music_cog._play_audio(station["url"], interaction, title=title)
 
 class RadioSelectView(discord.ui.View):
-    def __init__(self, presets: List[Dict[str, str]], user_id: int):
-        super().__init__(timeout=60.0)
-        self.presets = presets
+    def __init__(self, stations: List[Dict[str, Any]], user_id: int):
+        super().__init__(timeout=120.0)
+        self.stations = stations[:25]
         self.user_id = user_id
-        self.add_item(RadioSelect(presets))
+        self.add_item(RadioSelect(self.stations))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -254,8 +288,16 @@ class MusicCog(commands.Cog):
         self.empty_voice_tasks: dict[int, asyncio.Task] = {}
         self.voice_join_cooldowns: dict[int, float] = {}
 
-        # Load IPTV channels list in the background
-        asyncio.create_task(IPTVManager.load_channels())
+        # Load IPTV channels and keep probing their streams in the background,
+        # so dead channels are hidden from /tv.
+        asyncio.create_task(IPTVManager.health_loop())
+
+        # Right-click a message -> Apps -> "Play audio files": plays the files
+        # attached to it, streamed from Discord (nothing is stored on the server).
+        self.play_files_menu = discord.app_commands.ContextMenu(
+            name="Play audio files", callback=self.play_files_from_message
+        )
+        self.bot.tree.add_command(self.play_files_menu)
 
         # Clean up any leftover temp files in the system temp directory on startup
         try:
@@ -791,7 +833,7 @@ class MusicCog(commands.Cog):
                 return None, None
         elif query.startswith("http://") or query.startswith("https://"):
             ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
-            ffmpeg_before_options = apply_seek(_HTTP_BEFORE_OPTIONS, seek)
+            ffmpeg_before_options = apply_seek(_http_before_options(query), seek)
             try:
                 audio_source = make_stream_source(query, ffmpeg_before_options, ffmpeg_options)
                 title = query.split("/")[-1] or "Direct Stream"
@@ -921,10 +963,17 @@ class MusicCog(commands.Cog):
             try:
                 import httpx
                 headers = {"User-Agent": "Mozilla/5.0"}
-                async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
+                # Live TV playlists are often slow to answer; 2.5s rejected
+                # streams that play fine.
+                headers.update(IPTVManager.headers_for_url(query))
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                     resp = await client.head(query, headers=headers)
                     if resp.status_code >= 400:
-                        resp = await client.get(query, headers=headers)
+                        # Many radio servers refuse HEAD. Stream the GET and stop
+                        # at the headers: a plain GET would download the endless
+                        # stream until the timeout and report it unreachable.
+                        async with client.stream("GET", query, headers=headers) as resp:
+                            pass
                     if resp.status_code >= 400:
                         is_reachable = False
                         error_reason = f"HTTP {resp.status_code}"
@@ -940,7 +989,10 @@ class MusicCog(commands.Cog):
                     f"The channel **{stream_name}** might be offline or temporarily down."
                 )
 
-        audio_source, title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
+        audio_source, resolved_title = await self._get_audio_source_and_title(interaction.guild.id, query, volume, effects=effects, eq_preset=eq_preset)
+        # A caller-supplied title ("TV: Aaj Tak HD", an uploaded file name)
+        # beats the URL-derived one ("index.m3u8").
+        title = title or resolved_title
         if not audio_source:
             provider = self.state.get_provider(interaction.guild.id)
             logger.error("Extraction returned no audio source. provider=%s query=%r", provider, query)
@@ -1810,14 +1862,11 @@ class MusicCog(commands.Cog):
         else:
             channels = await IPTVManager.get_channels()
             
-        query_norm = channel.lower()
-        matches = [ch for ch in channels if query_norm in ch["name"].lower()]
-        
-        if not matches:
+        channel_data = best_channel_match(channels, channel)
+        if not channel_data:
             country_str = f" in {country}" if country else ""
-            return await interaction.followup.send(f"No channels matching '{channel}' found{country_str}.")
-            
-        channel_data = matches[0]
+            return await interaction.followup.send(f"No working channel matching '{channel}' found{country_str}. Try `/tv search`.")
+
         selected_url = channel_data["url"]
         
         session = self._session(interaction.guild.id)
@@ -1840,7 +1889,6 @@ class MusicCog(commands.Cog):
             await interaction.followup.send(f"Queued TV Stream: **{channel_data['name']}**")
         else:
             await self._play_audio(selected_url, interaction, title=title)
-            await interaction.followup.send(f"Now streaming TV: **{channel_data['name']}**")
 
     @tv_group.command(name="search", description="Search TV channels and select one from list")
     async def tv_search(self, interaction: discord.Interaction, query: str, country: Optional[str] = None):
@@ -1874,31 +1922,57 @@ class MusicCog(commands.Cog):
     # ==========================================
     radio_group = discord.app_commands.Group(name="radio", description="Internet radio streaming commands")
 
-    @radio_group.command(name="list", description="List pre-configured radio stations")
-    async def radio_list(self, interaction: discord.Interaction):
+    async def _radio_precheck(self, interaction: discord.Interaction) -> bool:
         await self._ensure_deferred(interaction)
         if not self._should_respond(interaction):
-            return await interaction.followup.send("Join a voice channel first!")
+            await interaction.followup.send("Join a voice channel first!")
+            return False
         if interaction.guild and self.state.is_active_in_other_guild(interaction.guild.id):
-            return await interaction.followup.send(
+            await interaction.followup.send(
                 "This bot is already active in another server. Leave that server's voice channel first."
             )
-            
-        presets_path = "bot/radio_stations.json"
-        if not os.path.exists(presets_path):
-            return await interaction.followup.send("No radio station presets found.")
-            
-        try:
-            with open(presets_path, "r", encoding="utf-8") as f:
-                presets = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read radio presets: {e}")
-            return await interaction.followup.send("Error loading radio stations.")
-            
-        view = RadioSelectView(presets, interaction.user.id)
+            return False
+        return True
+
+    @radio_group.command(name="list", description="Popular live radio stations (India by default)")
+    @discord.app_commands.describe(country="Two-letter country code, e.g. IN, US, GB (default IN)")
+    async def radio_list(self, interaction: discord.Interaction, country: Optional[str] = "IN"):
+        if not await self._radio_precheck(interaction):
+            return
+        code = (country or "IN").strip()[:2].upper()
+        stations = await radio_directory.top_stations(code)
+        source = f"Most played working stations ({code}) from Radio Browser"
+        if not stations:
+            # Directory unreachable: fall back to the bundled presets.
+            try:
+                with open(RADIO_PRESETS_FILE, "r", encoding="utf-8") as f:
+                    stations = json.load(f)
+                source = "Built-in stations (Radio Browser is unreachable right now)"
+            except Exception as e:
+                logger.error(f"Failed to read radio presets: {e}")
+        if not stations:
+            return await interaction.followup.send("No radio stations available right now. Try again in a minute.")
+
+        view = RadioSelectView(stations, interaction.user.id)
         embed = discord.Embed(
-            title="📻 Internet Radio Stations",
-            description="Select a pre-configured radio station from the dropdown menu to listen in your voice channel.",
+            title="📻 Live Radio",
+            description=f"{source}. Pick one from the menu.\nUse `/radio search` to find a station or genre.",
+            color=discord.Color.orange()
+        )
+        await interaction.followup.send(embed=embed, view=view)
+
+    @radio_group.command(name="search", description="Search live radio stations by name or genre")
+    @discord.app_commands.describe(query="Station name or genre, e.g. Mirchi, Bollywood, lofi, jazz", country="Optional two-letter country code, e.g. IN")
+    async def radio_search(self, interaction: discord.Interaction, query: str, country: Optional[str] = None):
+        if not await self._radio_precheck(interaction):
+            return
+        stations = await radio_directory.search_stations(query, (country or "").strip()[:2] or None)
+        if not stations:
+            return await interaction.followup.send(f"No working radio stations found for '{query}'.")
+        view = RadioSelectView(stations, interaction.user.id)
+        embed = discord.Embed(
+            title=f"📻 Radio: {query}",
+            description=f"Found **{len(view.stations)}** working stations. Pick one from the menu.",
             color=discord.Color.orange()
         )
         await interaction.followup.send(embed=embed, view=view)
@@ -1935,7 +2009,6 @@ class MusicCog(commands.Cog):
             await interaction.followup.send(f"Queued Radio Stream: **{display_name}**")
         else:
             await self._play_audio(url, interaction, title=title)
-            await interaction.followup.send(f"Now playing Radio Stream: **{display_name}**")
 
 
     # ==========================================
@@ -2008,7 +2081,97 @@ class MusicCog(commands.Cog):
             await interaction.followup.send(f"Queued Local File: **{os.path.basename(abs_path)}**")
         else:
             await self._play_audio(abs_path, interaction, title=title)
-            await interaction.followup.send(f"Now playing local file: **{os.path.basename(abs_path)}**")
+
+    async def _play_attachments(self, interaction: discord.Interaction, attachments: List[discord.Attachment]):
+        """Play files from the user's device, streamed from Discord's CDN.
+
+        The bot never downloads or stores them on the server: FFmpeg reads the
+        attachment URL directly, the same way it reads any online stream.
+        """
+        await self._ensure_deferred(interaction)
+        if not interaction.guild:
+            return await interaction.followup.send("This only works in a server.")
+        if not self._should_respond(interaction):
+            return await interaction.followup.send("Join a voice channel and use `/join` first!")
+        if self.state.is_active_in_other_guild(interaction.guild.id):
+            return await interaction.followup.send(
+                "This bot is already active in another server. Leave that server's voice channel first."
+            )
+
+        files = [a for a in attachments if _is_playable_upload(a)][:MAX_UPLOAD_FILES]
+        skipped = len(attachments) - len(files)
+        if not files:
+            return await interaction.followup.send(
+                "No audio files found. Supported: " + ", ".join(sorted(e.lstrip(".") for e in UPLOAD_EXTENSIONS)) + "."
+            )
+
+        session = self._session(interaction.guild.id)
+        queue = self.state.queue_for(interaction.guild.id)
+        items = [(a.url, f"📁 {a.filename}") for a in files]
+        busy = session.voice_client and (session.voice_client.is_playing() or session.voice_client.is_paused())
+
+        if busy:
+            for url, title in items:
+                queue.append(QueueItem(query=url, title=title, requested_by=interaction.user.id))
+        else:
+            for url, title in items[1:]:
+                queue.append(QueueItem(query=url, title=title, requested_by=interaction.user.id))
+            await self._play_audio(items[0][0], interaction, title=items[0][1])
+
+        names = "\n".join(f"• {a.filename}" for a in files)
+        note = f"\n({skipped} non-audio file(s) skipped)" if skipped else ""
+        queued = len(files) if busy else len(files) - 1
+        if queued:
+            await interaction.followup.send(
+                f"Added **{queued}** file(s) to the queue:\n{names}{note}\n"
+                "Use `/queue` to see them, `/remove` to drop one, `/skip` to move on."
+            )
+        await self.refresh_controller(interaction.guild.id)
+
+    @local_group.command(name="upload", description="Play audio files from your device (streamed, not stored on the server)")
+    @discord.app_commands.describe(
+        file1="Audio file to play", file2="Another file (optional)", file3="Another file (optional)",
+        file4="Another file (optional)", file5="Another file (optional)", file6="Another file (optional)",
+        file7="Another file (optional)", file8="Another file (optional)", file9="Another file (optional)",
+        file10="Another file (optional)",
+    )
+    async def local_upload(
+        self, interaction: discord.Interaction, file1: discord.Attachment,
+        file2: Optional[discord.Attachment] = None, file3: Optional[discord.Attachment] = None,
+        file4: Optional[discord.Attachment] = None, file5: Optional[discord.Attachment] = None,
+        file6: Optional[discord.Attachment] = None, file7: Optional[discord.Attachment] = None,
+        file8: Optional[discord.Attachment] = None, file9: Optional[discord.Attachment] = None,
+        file10: Optional[discord.Attachment] = None,
+    ):
+        files = [f for f in (file1, file2, file3, file4, file5, file6, file7, file8, file9, file10) if f]
+        await self._play_attachments(interaction, files)
+
+    async def play_files_from_message(self, interaction: discord.Interaction, message: discord.Message):
+        """Context menu: play every audio file attached to a message."""
+        if not message.attachments:
+            return await interaction.response.send_message(
+                "That message has no files. Drop your audio files into the chat first, "
+                "then right-click the message → Apps → Play audio files.", ephemeral=True
+            )
+        await self._play_attachments(interaction, list(message.attachments))
+
+    async def cog_unload(self):
+        self.bot.tree.remove_command(self.play_files_menu.name, type=self.play_files_menu.type)
+
+    @discord.app_commands.command(name="remove", description="Remove a song from the queue by its number in /queue")
+    @discord.app_commands.describe(position="Number shown in /queue (1 = next song)")
+    async def remove_cmd(self, interaction: discord.Interaction, position: int):
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        queue = self.state.queue_for(interaction.guild.id)
+        if not 1 <= position <= len(queue):
+            return await interaction.response.send_message(
+                f"There is no song #{position} in the queue ({len(queue)} queued).", ephemeral=True
+            )
+        item = queue[position - 1]
+        del queue[position - 1]
+        await interaction.response.send_message(f"Removed **{item.title or item.query}** from the queue.")
+        await self.refresh_controller(interaction.guild.id)
 
     @local_play.autocomplete("file")
     async def local_play_autocomplete(self, interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:

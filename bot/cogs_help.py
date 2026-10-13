@@ -33,7 +33,26 @@ class HelpCog(commands.Cog):
                 "`/resume` resume playback\n"
                 "`/stop` stop the current track\n"
                 "`/go` disconnect from voice\n"
-                "`/diagnose` check common voice issues"
+                "`/diagnose` check common voice issues\n"
+                "`/queue` show the queue, `/remove <number>` drop a song from it"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Your Files",
+            value=(
+                "`/local upload` play up to 10 audio files from your device\n"
+                "Or drop files in chat, right-click the message → Apps → **Play audio files**\n"
+                "Files are streamed from Discord, never stored on the server."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="TV & Radio",
+            value=(
+                "`/tv browse` · `/tv search <name>` · `/tv play <name>` live TV audio\n"
+                "`/radio list` popular stations · `/radio search <name or genre>`\n"
+                "`/radio play <url>` any stream URL"
             ),
             inline=False,
         )

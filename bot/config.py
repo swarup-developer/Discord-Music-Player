@@ -29,6 +29,10 @@ logging.basicConfig(
     ],
 )
 
+# httpx logs every request at INFO; the IPTV health check alone makes
+# thousands. The bot logs its own meaningful lines instead.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Enable verbose logging to debug voice issues.
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.voice_state").setLevel(logging.WARNING)

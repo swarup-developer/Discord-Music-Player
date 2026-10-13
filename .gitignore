@@ -34,3 +34,4 @@ check_logs.py
 ytjs/.cache/
 cookies.txt*
 ytjs/.browser-profile/
+iptv_*.json

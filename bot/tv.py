@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 IPTV_URL = "https://iptv-org.github.io/iptv/index.language.m3u"
 IPTV_CAT_URL = "https://iptv-org.github.io/iptv/index.m3u"
-CACHE_FILE = "iptv_lang_cache.json"
+CACHE_FILE = "iptv_cache_v2.json"  # v2: real languages, EXTVLCOPT headers
 CACHE_EXPIRY = 24 * 60 * 60  # 24 hours in seconds
 
 # Mapping of common 2-letter country codes to human-readable names
@@ -71,82 +71,130 @@ COUNTRY_CODES = {
     "il": "Israel"
 }
 
-# Reverse mapping for easy lookup
-VERIFIED_INDIAN_CHANNELS = [
-    {
-        "name": "Aaj Tak HD 🇮🇳",
-        "url": "https://feeds.intoday.in/aajtak/api/aajtakhd/master.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "AajTak.in",
-        "logo": "https://i.imgur.com/aajtak.png",
-        "geo_blocked": False
-    },
-    {
-        "name": "9XM Music 🇮🇳",
-        "url": "https://9xjio.wiseplayout.com/9XM/master.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "9XM.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "9X Jalwa 🇮🇳",
-        "url": "https://b.jsrdn.com/strm/channels/9xjalwa/master.m3u8",
-        "category": "Music",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "9XJalwa.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "10TV Telugu News 🇮🇳",
-        "url": "https://mumbai-edge.smartplaytv.in/10TV/index.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Telugu",
-        "tvg_id": "10TV.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "24 Malayalam News 🇮🇳",
-        "url": "https://mumt07.tangotv.in/zHjX9OFlTWENTYFOURNEWS/index.m3u8",
-        "category": "News",
-        "country_code": "in",
-        "language": "Malayalam",
-        "tvg_id": "24News.in",
-        "logo": "",
-        "geo_blocked": False
-    },
-    {
-        "name": "Aastha Bhajan 🇮🇳",
-        "url": "https://mumt05.tangotv.in/87NeALx2AASTHABHAJAN/index.m3u8",
-        "category": "Religious",
-        "country_code": "in",
-        "language": "Hindi",
-        "tvg_id": "AasthaBhajan.in",
-        "logo": "",
-        "geo_blocked": False
-    }
-]
+# Reverse mapping ("india" -> "in"). get_channels_by_country() and
+# get_channels_filtered() used this name without it ever being defined, so
+# picking a country in /tv browse or passing country= to /tv play crashed.
+COUNTRY_NAME_TO_CODE = {name.lower(): code for code, name in COUNTRY_CODES.items()}
+
+# Stream health: iptv-org lists thousands of public streams and a share of them
+# is always offline. Every channel is probed in the background and dead ones
+# are hidden from browse/search/play. Results persist across restarts.
+HEALTH_FILE = "iptv_health_v2.json"  # v2: probes follow master -> variant playlist
+HEALTH_TTL = 12 * 60 * 60        # re-probe a channel after 12 hours
+PLAYLIST_REFRESH = 24 * 60 * 60  # re-download the iptv-org playlists daily
+PROBE_CONCURRENCY = 12
+_RESOLUTION_RE = re.compile(r"\s*\((\d{3,4})[pi]\)")
+
 
 class IPTVManager:
     _channels: List[Dict[str, Any]] = []
     _countries: List[str] = []
     _channels_by_country: Dict[str, List[Dict[str, Any]]] = {}
     _channels_by_language: Dict[str, List[Dict[str, Any]]] = {}
+    _headers_by_url: Dict[str, Dict[str, str]] = {}
+    _health: Dict[str, Dict[str, Any]] = {}
     _is_loading: bool = False
+    _loaded_at: float = 0.0
+
+    # ---------- health ----------
+    @classmethod
+    def _load_health(cls) -> None:
+        try:
+            with open(HEALTH_FILE, "r", encoding="utf-8") as f:
+                cls._health = json.load(f)
+        except (OSError, ValueError):
+            cls._health = {}
+
+    @classmethod
+    def _save_health(cls) -> None:
+        try:
+            tmp = HEALTH_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cls._health, f)
+            os.replace(tmp, HEALTH_FILE)
+        except OSError as e:
+            logger.warning(f"Could not save IPTV health cache: {e}")
+
+    @classmethod
+    def is_dead(cls, ch: Dict[str, Any]) -> bool:
+        h = cls._health.get(ch.get("url", ""))
+        return bool(h) and not h.get("ok")
+
+    @classmethod
+    def usable(cls, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Drop channels whose stream was found dead; verified-alive ones first."""
+        alive = [ch for ch in channels if not cls.is_dead(ch)]
+        return sorted(alive, key=lambda ch: 0 if cls._health.get(ch.get("url", ""), {}).get("ok") else 1)
+
+    @classmethod
+    def headers_for_url(cls, url: str) -> Dict[str, str]:
+        """Extra HTTP headers a stream needs (from #EXTVLCOPT in the playlist)."""
+        return cls._headers_by_url.get(url, {})
+
+    @classmethod
+    async def _probe(cls, client: httpx.AsyncClient, ch: Dict[str, Any]) -> bool:
+        headers = {"User-Agent": ch.get("user_agent") or "Mozilla/5.0"}
+        if ch.get("referrer"):
+            headers["Referer"] = ch["referrer"]
+        try:
+            async with client.stream("GET", ch["url"], headers=headers) as resp:
+                if resp.status_code != 200:
+                    return False
+                head = b""
+                async for chunk in resp.aiter_bytes():
+                    head += chunk
+                    if len(head) >= 2048:
+                        break
+            if b"#EXTM3U" not in head[:512]:
+                return len(head) >= 2048  # direct stream: real media bytes
+            # A master playlist can answer while the stream inside it is gone
+            # (HTTP 404), so follow it to the first variant playlist.
+            text = head.decode("utf-8", errors="ignore")
+            if "#EXT-X-STREAM-INF" in text:
+                variant = next((l.strip() for l in text.splitlines()
+                                if l.strip() and not l.startswith("#")), None)
+                if variant:
+                    vresp = await client.get(str(httpx.URL(ch["url"]).join(variant)), headers=headers)
+                    return vresp.status_code == 200 and "#EXTM3U" in vresp.text[:512]
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    async def health_loop(cls) -> None:
+        """Keep the channel list fresh and probe streams, India first."""
+        cls._load_health()
+        sem = asyncio.Semaphore(PROBE_CONCURRENCY)
+        while True:
+            try:
+                if not cls._channels or time.time() - cls._loaded_at > PLAYLIST_REFRESH:
+                    await cls.load_channels(force_refresh=bool(cls._channels))
+                now = time.time()
+                stale = [ch for ch in cls._channels
+                         if now - cls._health.get(ch["url"], {}).get("t", 0) > HEALTH_TTL]
+                stale.sort(key=lambda ch: 0 if ch.get("country_code") == "in" else 1)
+                if stale:
+                    logger.info(f"IPTV health check: probing {len(stale)} streams...")
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                    async def run(ch):
+                        async with sem:
+                            ok = await cls._probe(client, ch)
+                        cls._health[ch["url"]] = {"ok": ok, "t": time.time()}
+                    for i in range(0, len(stale), 200):
+                        await asyncio.gather(*(run(ch) for ch in stale[i:i + 200]))
+                        cls._save_health()
+                if stale:
+                    alive = sum(1 for ch in cls._channels if cls._health.get(ch["url"], {}).get("ok"))
+                    logger.info(f"IPTV health check done: {alive}/{len(cls._channels)} streams alive.")
+            except Exception as e:
+                logger.error(f"IPTV health loop error: {e}")
+            await asyncio.sleep(60 * 60)
 
     @classmethod
     async def get_channels(cls) -> List[Dict[str, Any]]:
         if not cls._channels:
             await cls.load_channels()
-        return cls._channels
+        return cls.usable(cls._channels)
 
     @classmethod
     async def get_channels_by_country(cls, country: str) -> List[Dict[str, Any]]:
@@ -161,20 +209,20 @@ class IPTVManager:
             code = normalized if len(normalized) == 2 else None
             
         if code:
-            return cls._channels_by_country.get(code, [])
+            return cls.usable(cls._channels_by_country.get(code, []))
             
         results = []
         for ch in cls._channels:
             if ch.get("country_code") == normalized or ch.get("category", "").lower() == normalized:
                 results.append(ch)
-        return results
+        return cls.usable(results)
 
     @classmethod
     async def get_channels_by_language(cls, language: str) -> List[Dict[str, Any]]:
         if not cls._channels:
             await cls.load_channels()
         normalized = language.strip().lower()
-        return [ch for ch in cls._channels if ch.get("language", "").lower() == normalized]
+        return cls.usable([ch for ch in cls._channels if ch.get("language", "").lower() == normalized])
 
     @classmethod
     async def get_channels_filtered(cls, language: Optional[str] = None, country: Optional[str] = None, category: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -195,7 +243,7 @@ class IPTVManager:
             cat_lower = category.lower()
             results = [ch for ch in results if ch.get("category", "").lower() == cat_lower]
             
-        return results
+        return cls.usable(results)
 
     @classmethod
     def get_all_languages(cls) -> List[str]:
@@ -239,6 +287,7 @@ class IPTVManager:
                             data = json.load(f)
                             if data:
                                 cls._channels = data
+                                cls._loaded_at = mtime
                                 cls._rebuild_indices()
                                 logger.info(f"Loaded {len(cls._channels)} IPTV channels from local cache.")
                                 return
@@ -271,17 +320,20 @@ class IPTVManager:
                     response_in = await client.get("https://iptv-org.github.io/iptv/countries/in.m3u", timeout=15.0)
                     if response_in.status_code == 200:
                         in_channels = cls._parse_m3u(response_in.text, is_lang=False)
+                        # Take each channel's real language from the language
+                        # index; every Indian channel used to be labelled Hindi.
+                        lang_by_url = {ch["url"]: ch.get("language", "") for ch in cls._channels}
                         for ch in in_channels:
                             ch["country_code"] = "in"
-                            if not ch.get("language"):
-                                ch["language"] = "Hindi"
+                            ch["language"] = ch.get("language") or lang_by_url.get(ch["url"], "")
                         existing_urls = {ch["url"] for ch in cls._channels}
                         new_in_channels = [ch for ch in in_channels if ch["url"] not in existing_urls]
-                        cls._channels = VERIFIED_INDIAN_CHANNELS + new_in_channels + cls._channels
+                        cls._channels = new_in_channels + cls._channels
                         logger.info(f"Loaded {len(in_channels)} specific Indian IPTV channels.")
                 except Exception as ie:
                     logger.warning(f"Failed to fetch India IPTV playlist: {ie}")
                     
+                cls._loaded_at = time.time()
                 cls._rebuild_indices()
                 # Write to cache
                 try:
@@ -348,6 +400,13 @@ class IPTVManager:
                 info["geo_blocked"] = "[geo-blocked]" in info["name"].lower() or "geo-blocked" in line.lower()
                 
                 current_info = info
+            elif line.startswith("#EXTVLCOPT:") and current_info is not None:
+                # Some streams only answer with a specific User-Agent/Referer.
+                key, _, value = line[len("#EXTVLCOPT:"):].partition("=")
+                if key == "http-user-agent" and value:
+                    current_info["user_agent"] = value
+                elif key == "http-referrer" and value:
+                    current_info["referrer"] = value
             elif line.startswith("http://") or line.startswith("https://"):
                 if current_info:
                     current_info["url"] = line
@@ -360,7 +419,15 @@ class IPTVManager:
     def _rebuild_indices(cls) -> None:
         cls._channels_by_country = {}
         cls._channels_by_language = {}
+        cls._headers_by_url = {}
         for ch in cls._channels:
+            hdr = {}
+            if ch.get("user_agent"):
+                hdr["User-Agent"] = ch["user_agent"]
+            if ch.get("referrer"):
+                hdr["Referer"] = ch["referrer"]
+            if hdr:
+                cls._headers_by_url[ch["url"]] = hdr
             # Country indexing
             code = ch.get("country_code")
             if code:
@@ -375,6 +442,35 @@ class IPTVManager:
                 if lang_key not in cls._channels_by_language:
                     cls._channels_by_language[lang_key] = []
                 cls._channels_by_language[lang_key].append(ch)
+
+def best_channel_match(channels: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
+    """Exact name first, then prefix, then substring; higher resolution wins ties."""
+    q = query.strip().lower()
+
+    def base(name: str) -> str:
+        return _RESOLUTION_RE.sub("", name).replace("[Geo-blocked]", "").strip().lower()
+
+    def res(name: str) -> int:
+        m = _RESOLUTION_RE.search(name)
+        return int(m.group(1)) if m else 0
+
+    ranked = []
+    for ch in channels:
+        b = base(ch["name"])
+        if b == q:
+            rank = 0
+        elif b.startswith(q):
+            rank = 1
+        elif q in b:
+            rank = 2
+        else:
+            continue
+        ranked.append((rank, ch.get("geo_blocked", False), -res(ch["name"]), ch["name"], ch))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda r: r[:4])
+    return ranked[0][4]
+
 
 # Define Interactive Views for Discord
 class CountrySelect(discord.ui.Select):
@@ -729,9 +825,8 @@ class ChannelSelect(discord.ui.Select):
             queue.append(QueueItem(query=selected_url, title=title, requested_by=interaction.user.id))
             await interaction.followup.send(f"Queued TV Stream: **{channel_data['name']}**")
         else:
-            # Play immediately
+            # _play_audio reports "Now playing" or the error itself.
             await music_cog._play_audio(selected_url, interaction, title=title)
-            await interaction.followup.send(f"Now streaming TV: **{channel_data['name']}**")
 
 
 class IPTVChannelView(discord.ui.View):
