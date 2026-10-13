@@ -68,6 +68,12 @@ call npm run build
 
 cd %~dp0
 
+:: 6. Install the local YouTube resolver (youtubei.js) dependencies
+echo --> Installing local YouTube resolver dependencies (ytjs)...
+cd ytjs
+call npm install
+cd %~dp0
+
 echo ====================================================
 echo Setup complete!
 echo Next Steps:

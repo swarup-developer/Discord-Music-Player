@@ -11,7 +11,11 @@ async def search_songs(query: str, provider: str, limit: int = 10) -> List[Dict[
     Unified search helper to query songs from YouTube, JioSaavn, or SoundCloud.
     """
     if provider == "youtube":
-        return await YouTubeHandler.search(query, limit=limit)
+        return await YouTubeHandler.search(query, limit=limit, music=False)
+    elif provider in ("ytmusic", "spotify"):
+        # Spotify playback is matched on YouTube Music: same catalogue of
+        # official audio, no Premium account or DRM needed.
+        return await YouTubeHandler.search(query, limit=limit, music=True)
     elif provider == "jiosaavn":
         results = await JioSaavnHandler.engine.search(query)
         if not results:
@@ -37,7 +41,4 @@ async def search_songs(query: str, provider: str, limit: int = 10) -> List[Dict[
                         "provider": "local"
                     })
         return results[:limit]
-    elif provider == "spotify":
-        # Fallback to YouTube search for Spotify provider queries
-        return await YouTubeHandler.search(query, limit=limit)
     return []

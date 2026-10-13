@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,7 @@ import httpx
 import yt_dlp
 
 from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
+from .config import YOUTUBE_PROXY
 
 # FFmpeg input options, kept as ``-ss``-free templates so a later seek can be
 # applied with apply_seek() without re-resolving the stream.
@@ -34,9 +36,12 @@ def build_http_before_options(http_headers: Optional[dict] = None) -> str:
         headers_opt = f'-headers "{header_lines}" '
     else:
         headers_opt = '-headers "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n" '
+    # Stream URLs are bound to the IP that resolved them, so FFmpeg has to
+    # fetch through the same proxy the resolver used.
+    proxy_opt = f"-http_proxy {YOUTUBE_PROXY} " if YOUTUBE_PROXY else ""
     return (
         f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        f"{headers_opt}"
+        f"{proxy_opt}{headers_opt}"
         f"-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
     )
 
@@ -63,15 +68,21 @@ POT_SERVER_PORT = 4416
 # cannot extract a stream. Loopback only -- see the security note in server.mjs.
 YTJS_SERVER_HOST = "127.0.0.1"
 YTJS_SERVER_PORT = 4417
-# Generous enough to cover a cold InnerTube session plus a client retry, but
-# still well inside _YDL_EXTRACT_TIMEOUT so the fallback can win the race.
-YTJS_TIMEOUT = 40.0
+# The resolver is now the primary path; keep this short so a hung resolver
+# hands over to yt-dlp quickly.
+YTJS_TIMEOUT = 15.0
+YTJS_SEARCH_TIMEOUT = 8.0
+# Search YouTube Music songs (official audio) instead of regular videos.
+YTJS_MUSIC_SEARCH = os.getenv("YOUTUBE_MUSIC_SEARCH", "1") != "0"
 
 # Cookie names yt-dlp actually authenticates YouTube with. A logged-in Netscape
 # export contains the first-party set; an export taken while signed out (or by
 # an extension that only captures third-party cookies) contains just the "3P"
 # variants, and YouTube then answers every request from a datacenter IP with
 # "Sign in to confirm you're not a bot".
+# First-line marker of cookies.txt files written by ytjs/cookie_refresher.mjs.
+COOKIE_REFRESHER_MARKER = "# dcbot-cookie-refresher"
+
 _AUTH_COOKIE_NAMES = (
     "__Secure-1PSID",
     "SID",
@@ -160,42 +171,58 @@ def check_ytjs_resolver() -> bool:
 
 
 def check_youtube_cookies() -> bool:
-    """Warn at startup when cookies.txt is missing its authentication cookies.
+    """Validate cookies.txt at startup and retire it automatically when dead.
+
+    A cookies.txt without the auth cookies (a signed-out export, or one whose
+    session YouTube has since rotated away) never helps and can make YouTube
+    *more* suspicious, so it is renamed to ``cookies.txt.invalid`` instead of
+    nagging for a new one. With YOUTUBE_PROXY set (Cloudflare WARP), YouTube
+    works anonymously and cookies are not needed at all.
 
     Only cookie NAMES are ever read or logged here -- never values.
     """
     cookie_file = find_cookie_file()
+    if cookie_file:
+        present = set()
+        from_refresher = False
+        try:
+            with open(cookie_file, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith(COOKIE_REFRESHER_MARKER):
+                        from_refresher = True
+                    if line.startswith("#"):
+                        continue
+                    fields = line.rstrip("\n").split("\t")
+                    if len(fields) >= 6:
+                        present.add(fields[5])
+        except OSError as e:
+            logger.warning("Could not read %s: %s", cookie_file, e)
+        missing = [name for name in _AUTH_COOKIE_NAMES if name not in present]
+        if from_refresher:
+            # Written by ytjs/cookie_refresher.mjs, which keeps it fresh itself.
+            logger.info("%s is maintained by the server cookie refresher.", cookie_file)
+        elif missing:
+            retired = cookie_file + ".invalid"
+            try:
+                os.replace(cookie_file, retired)
+                logger.warning(
+                    "%s had no YouTube login cookies (%s); moved it to %s so it "
+                    "is no longer used.", cookie_file, ", ".join(missing), retired,
+                )
+                cookie_file = None
+            except OSError as e:
+                logger.warning("Could not retire %s: %s", cookie_file, e)
+
+    if YOUTUBE_PROXY:
+        logger.info("YouTube traffic goes through proxy %s; cookies are not needed.", YOUTUBE_PROXY)
+        return True
     if not cookie_file:
         logger.warning(
-            "No cookies.txt found. YouTube will likely reject extraction with "
-            "\"Sign in to confirm you're not a bot\"."
+            "No usable cookies.txt and no YOUTUBE_PROXY. On a datacenter server "
+            "YouTube will likely answer \"Sign in to confirm you're not a bot\"; "
+            "set YOUTUBE_PROXY (e.g. Cloudflare WARP) to fix this without cookies."
         )
         return False
-
-    present = set()
-    try:
-        with open(cookie_file, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                fields = line.rstrip("\n").split("\t")
-                if len(fields) >= 6:
-                    present.add(fields[5])
-    except OSError as e:
-        logger.warning("Could not read %s: %s", cookie_file, e)
-        return False
-
-    missing = [name for name in _AUTH_COOKIE_NAMES if name not in present]
-    if missing:
-        logger.error(
-            "%s is missing YouTube auth cookies: %s. This is an export from a "
-            "signed-out session, so YouTube will reject extraction with \"Sign "
-            "in to confirm you're not a bot\". Re-export from a browser profile "
-            "that is signed in to YouTube, then stop using that profile.",
-            cookie_file, ", ".join(missing),
-        )
-        return False
-
     logger.info("%s contains the expected YouTube auth cookies.", cookie_file)
     return True
 
@@ -231,12 +258,32 @@ def find_cookie_file() -> Optional[str]:
     return None
 
 
+def _private_cookie_copy(cookie_file: str) -> str:
+    """Return a private copy of cookies.txt for yt-dlp to use.
+
+    yt-dlp writes its cookie jar back to ``cookiefile`` when it finishes. On
+    the shared file that overwrote the server cookie refresher's output (and
+    its marker line), so the bot later retired perfectly good cookies. The copy
+    is refreshed whenever the real file is newer.
+    """
+    dest = os.path.join(tempfile.gettempdir(), f"dcbot-ytdlp-cookies-{os.getpid()}.txt")
+    try:
+        if not os.path.exists(dest) or os.path.getmtime(cookie_file) > os.path.getmtime(dest):
+            shutil.copyfile(cookie_file, dest)
+        return dest
+    except OSError as e:
+        logger.warning("Could not copy %s for yt-dlp (%s); using it directly.", cookie_file, e)
+        return cookie_file
+
+
 def get_ydl_opts(extra_opts: Optional[dict] = None) -> dict:
     opts = {**YDL_OPTIONS}
 
     cookie_file = find_cookie_file()
     if cookie_file:
-        opts['cookiefile'] = cookie_file
+        opts['cookiefile'] = _private_cookie_copy(cookie_file)
+    if YOUTUBE_PROXY:
+        opts['proxy'] = YOUTUBE_PROXY
 
     if extra_opts:
         opts.update(extra_opts)
@@ -264,9 +311,8 @@ def _is_youtube_playlist_url(url: str) -> bool:
 
 
 # Invidious/Cobalt public instances used to live here. Every instance was
-# dead, rate-limited or returning empty tunnels, so the fallback failed exactly
-# when it was needed. Extraction now falls back to the local youtubei.js
-# resolver in ytjs/ instead -- see YTJS_SERVER_PORT above.
+# dead, rate-limited or returning empty tunnels. Extraction and search now go
+# through the local youtubei.js resolver in ytjs/ -- see YTJS_SERVER_PORT.
 
 
 class YouTubeHandler:
@@ -280,68 +326,6 @@ class YouTubeHandler:
         if not YouTubeHandler.is_youtube_url(query):
             return False
         return bool(_extract_video_id(query)) or _is_youtube_playlist_url(query)
-
-    # Piped API helpers
-
-    # Public API functions
-    @classmethod
-    async def _invidious_search(cls, query: str, limit: int = 10) -> list[dict]:
-        """Search YouTube videos using Invidious API in parallel."""
-        import urllib.parse
-        encoded_query = urllib.parse.quote(query)
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        instances = cls._get_invidious_instances()
-
-        async def _query_instance(client: httpx.AsyncClient, instance: str) -> Optional[list[dict]]:
-            api_url = f"https://{instance}/api/v1/search?q={encoded_query}&type=video"
-            try:
-                response = await client.get(api_url, timeout=3.0)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data:
-                        results = []
-                        for entry in data[:limit]:
-                            if not entry or not entry.get("videoId"):
-                                continue
-                            results.append({
-                                'id': entry.get('videoId'),
-                                'title': entry.get('title') or 'Unknown YouTube Video',
-                                'song': entry.get('title') or 'Unknown YouTube Video',
-                                'album': entry.get('author') or 'YouTube',
-                                'url': f"https://www.youtube.com/watch?v={entry.get('videoId')}",
-                                'duration': entry.get('lengthSeconds'),
-                                'provider': 'youtube'
-                            })
-                        if results:
-                            cls._working_invidious_instance = instance
-                            logger.info(f"Invidious search succeeded for '{query}' using {instance}")
-                            return results
-            except Exception as e:
-                logger.debug(f"Invidious search failed on {instance}: {e}")
-            return None
-
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
-            tasks = [asyncio.create_task(_query_instance(client, inst)) for inst in instances]
-            pending = set(tasks)
-            results = None
-            
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    try:
-                        res = task.result()
-                        if res:
-                            results = res
-                            break
-                    except Exception:
-                        pass
-                if results:
-                    break
-
-            for task in pending:
-                task.cancel()
-
-            return results or []
 
     @classmethod
     async def _youtube_api_search(cls, query: str, limit: int = 10) -> list[dict]:
@@ -496,7 +480,7 @@ class YouTubeHandler:
         return []
 
     @classmethod
-    async def search(cls, query: str, limit: int = 10) -> list[dict]:
+    async def search(cls, query: str, limit: int = 10, music: Optional[bool] = None) -> list[dict]:
         # For URLs, don't use search — go straight to yt-dlp
         if query.startswith("http://") or query.startswith("https://"):
             if YouTubeHandler.is_youtube_url(query) and not YouTubeHandler.is_playable_youtube_url(query):
@@ -504,26 +488,44 @@ class YouTubeHandler:
                 return []
             return await cls._ydl_search(query, limit)
 
-        # Try fast scrape-based search first
+        # Fastest and cleanest: the warm InnerTube session in the local
+        # resolver, searching YouTube Music songs (official audio, no video
+        # intros) and falling back to regular video search there.
+        ytjs_results = await cls._ytjs_search(query, limit, YTJS_MUSIC_SEARCH if music is None else music)
+        if ytjs_results:
+            return ytjs_results
+
         scrape_results = await cls._scrape_search(query, limit)
         if scrape_results:
             return scrape_results
 
-        # Try official YouTube API search next
         logger.info(f"Searching YouTube via official V3 API for query: '{query}'")
         api_results = await cls._youtube_api_search(query, limit)
         if api_results:
             return api_results
 
-        # Try Invidious search next
-        logger.info("YouTube V3 API search returned no results. Trying Invidious search fallback...")
-        invidious_results = await cls._invidious_search(query, limit)
-        if invidious_results:
-            return invidious_results
-
-        # Fallback to yt-dlp search if both fail
-        logger.info("Invidious search returned no results. Trying yt-dlp search fallback...")
+        logger.info("YouTube V3 API search returned no results. Trying yt-dlp search fallback...")
         return await cls._ydl_search(query, limit)
+
+    @classmethod
+    async def _ytjs_search(cls, query: str, limit: int = 10, music: bool = True) -> list[dict]:
+        """Search through the local youtubei.js resolver (YouTube Music first)."""
+        endpoint = f"http://{YTJS_SERVER_HOST}:{YTJS_SERVER_PORT}/search"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    endpoint,
+                    params={"q": query, "limit": limit, "music": "1" if music else "0"},
+                    timeout=YTJS_SEARCH_TIMEOUT,
+                )
+            if resp.status_code == 200:
+                return resp.json().get("results") or []
+            logger.warning("Local resolver search returned HTTP %s", resp.status_code)
+        except httpx.ConnectError:
+            logger.debug("Local resolver not reachable for search")
+        except Exception as e:
+            logger.warning("Local resolver search failed: %r", e)
+        return []
 
     @classmethod
     async def _ydl_search(cls, query: str, limit: int = 10) -> list[dict]:
@@ -570,35 +572,7 @@ class YouTubeHandler:
         return results
 
     @classmethod
-    async def _validate_stream_url(cls, client: httpx.AsyncClient, url: str) -> bool:
-        """Validate that the stream URL actually returns audio data (non-zero bytes).
-
-        Skips leading empty chunks rather than treating the first one as a
-        failure: tunnel endpoints that transcode on demand routinely yield an
-        empty chunk while the upstream buffer fills, and rejecting those made
-        working streams look dead. The read timeout still bounds the wait.
-        """
-        try:
-            async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12.0) as resp:
-                if resp.status_code in [200, 206]:
-                    async for chunk in resp.aiter_bytes(chunk_size=1024):
-                        if len(chunk) > 0:
-                            return True
-                    logger.warning(
-                        "Stream validation got %s but no audio bytes for %s",
-                        resp.status_code, url[:80]
-                    )
-                else:
-                    logger.warning(
-                        "Stream validation rejected HTTP %s for %s",
-                        resp.status_code, url[:80]
-                    )
-        except Exception as e:
-            logger.warning(f"Stream URL validation failed for {url[:80]}: {e}")
-        return False
-
-    @classmethod
-    async def _extract_via_ytjs_async(cls, video_id: str) -> Optional[tuple[str, str, bool, int]]:
+    async def _extract_via_ytjs_async(cls, video_id: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
         """Resolve a stream through the local youtubei.js resolver.
 
         This replaced the Invidious and Cobalt public instances, which were all
@@ -631,18 +605,8 @@ class YouTubeHandler:
                 except (TypeError, ValueError):
                     duration = 0
 
-                # A resolved googlevideo URL can still 403 from a datacenter IP,
-                # which is what made the old public fallbacks useless. Confirm
-                # it actually yields bytes before handing it to FFmpeg, so a
-                # dead URL loses the extraction race instead of winning it and
-                # producing silence. Live manifests are skipped: HLS/DASH
-                # playlists are handled by FFmpeg, not read as a byte stream.
-                if not is_live and not await cls._validate_stream_url(client, stream_url):
-                    logger.warning(
-                        "Local YouTube resolver returned an unplayable stream for %s",
-                        video_id,
-                    )
-                    return None
+                # No re-validation here: the resolver already probed the URL deep
+                # into the file, which a 1KB probe from here cannot do reliably.
         except httpx.ConnectError:
             logger.error(
                 "Local YouTube resolver is not reachable on %s:%s. Start it with "
@@ -651,7 +615,7 @@ class YouTubeHandler:
             )
             return None
         except Exception as e:
-            logger.warning(f"Local YouTube resolver failed for {video_id}: {e}")
+            logger.warning("Local YouTube resolver failed for %s: %r", video_id, e)
             return None
 
         logger.info("Local YouTube resolver resolved %s (%r)", video_id, title)
@@ -703,7 +667,7 @@ class YouTubeHandler:
             except Exception as e:
                 logger.error(f"yt-dlp extract_stream_url failed: {e}")
 
-        # If yt-dlp fails (e.g. cookie expires or network block), try Invidious/Cobalt public fallbacks
+        # If yt-dlp fails (e.g. cookie expires or network block), try the local resolver
         logger.info("yt-dlp extraction failed. Trying the local youtubei.js resolver...")
         fallback = cls._extract_stream_url_fallback(url)
         if fallback:
@@ -738,30 +702,34 @@ class YouTubeHandler:
 
     @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
-        """Extract with yt-dlp first, using ytjs only when primary extraction fails."""
+        """Resolve via the local youtubei.js resolver first, yt-dlp as fallback.
+
+        Measured: the resolver answers in ~0.5s with a warm session, while a
+        fresh yt-dlp extraction takes ~5s per track.
+        """
         if not YouTubeHandler.is_playable_youtube_url(url):
             logger.info("Rejected non-playable YouTube URL during stream extraction: %s", url)
             return None
 
+        video_id = _extract_video_id(url)
+        if video_id:
+            result = await cls._extract_via_ytjs_async(video_id)
+            if result:
+                return result
+            logger.info("Local resolver failed for %s; falling back to yt-dlp", video_id)
+
         try:
-            result = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 asyncio.get_running_loop().run_in_executor(
                     _YDL_EXECUTOR, cls._ydl_extract_stream_url_only, url
                 ),
                 timeout=_YDL_EXTRACT_TIMEOUT,
             )
-            if result:
-                return result
         except asyncio.TimeoutError:
-            logger.warning(
-                "yt-dlp extraction exceeded %.1fs for %s; trying ytjs fallback",
-                _YDL_EXTRACT_TIMEOUT, url,
-            )
+            logger.warning("yt-dlp extraction exceeded %.1fs for %s", _YDL_EXTRACT_TIMEOUT, url)
         except Exception as e:
-            logger.warning("yt-dlp extraction failed: %s; trying ytjs fallback", e)
-
-        return await cls._extract_stream_url_fallback_async(url)
-
+            logger.warning("yt-dlp extraction failed: %s", e)
+        return None
 
     @classmethod
     def extract_stream_url(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
@@ -798,7 +766,7 @@ class YouTubeHandler:
             import httpx
             import tempfile
             headers = {"User-Agent": "Mozilla/5.0"}
-            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True, proxy=YOUTUBE_PROXY) as client:
                 async with client.stream("GET", stream_url, headers=headers) as resp:
                     if resp.status_code != 200:
                         logger.error(f"Failed to download YouTube stream: HTTP {resp.status_code}")
@@ -833,7 +801,7 @@ class YouTubeHandler:
             return None
 
     @classmethod
-    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
+    async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None, music: Optional[bool] = None):
         try:
             if cls.is_youtube_url(query):
                 meta = await cls.extract_stream_url_async(query)
@@ -863,7 +831,7 @@ class YouTubeHandler:
                         return source, title
                     return None, None
             else:
-                results = await cls.search(query, limit=1)
+                results = await cls.search(query, limit=1, music=music)
                 if not results:
                     return None, None
                 return await cls.get_audio_source_for_song(results[0], volume, effects, seek, eq_preset)
@@ -884,8 +852,7 @@ class YouTubeHandler:
             
             stream_url, title, is_live, duration, *extra = meta
             http_headers = extra[0] if extra else None
-            # When a public fallback (Invidious/Cobalt) wins the extraction race
-            # it may not carry a title; prefer the search-result title then.
+            # Prefer the search-result title when the resolver had none.
             if not title or title == "Unknown YouTube Video":
                 title = song.get("title") or song.get("song") or title
             

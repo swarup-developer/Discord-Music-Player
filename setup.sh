@@ -82,7 +82,15 @@ sudo -u "$USER_NAME" .venv/bin/pip install \
   "yt-dlp>=2026.6.9" \
   "bgutil-ytdlp-pot-provider>=1.3.1"
 
-# 7. Create Supervisor Configuration Files
+# 7. Install the local YouTube resolver (youtubei.js) used as the extraction
+#    fallback. It replaced the public Invidious/Cobalt instances, which were all
+#    offline or serving empty streams.
+echo "--> Installing local YouTube resolver dependencies (ytjs)..."
+cd "$BOT_DIR/ytjs"
+sudo -u "$USER_NAME" npm install
+cd "$BOT_DIR"
+
+# 8. Create Supervisor Configuration Files
 echo "--> Generating Supervisor configuration files..."
 
 # Supervisor config for POT Server
@@ -95,6 +103,18 @@ autostart=true
 autorestart=true
 stderr_logfile=$USER_HOME/bgutil-ytdlp-pot-provider/server/err.log
 stdout_logfile=$USER_HOME/bgutil-ytdlp-pot-provider/server/out.log
+EOF
+
+# Supervisor config for the local YouTube resolver. Binds to 127.0.0.1 only.
+cat <<EOF > /etc/supervisor/conf.d/dcbot_ytjs.conf
+[program:dcbot-ytjs]
+command=node $BOT_DIR/ytjs/server.mjs
+directory=$BOT_DIR/ytjs
+user=$USER_NAME
+autostart=true
+autorestart=true
+stderr_logfile=$BOT_DIR/ytjs/err.log
+stdout_logfile=$BOT_DIR/ytjs/out.log
 EOF
 
 # Supervisor config for Discord Bot
@@ -110,11 +130,12 @@ stderr_logfile=$BOT_DIR/err.log
 stdout_logfile=$BOT_DIR/out.log
 EOF
 
-# 8. Reload and Start services via Supervisor
+# 9. Reload and Start services via Supervisor
 echo "--> Restarting Supervisor services..."
 supervisorctl reread
 supervisorctl update
 supervisorctl restart bgutil-pot
+supervisorctl restart dcbot-ytjs
 supervisorctl restart dcbot
 
 echo "===================================================="

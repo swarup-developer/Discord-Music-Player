@@ -156,93 +156,38 @@ class LyricsView(discord.ui.View):
 
 
 class ProviderSelectionView(discord.ui.View):
+    # (state key, button label, confirmation icon)
+    PROVIDERS = [
+        ("ytmusic", "YouTube Music", "🎶"),
+        ("jiosaavn", "JioSaavn", "🎵"),
+        ("soundcloud", "SoundCloud", "🧡"),
+        ("spotify", "Spotify", "🟢"),
+        ("local", "Local Files", "📁"),
+    ]
+
     def __init__(self, state: BotState, guild_id: int):
         super().__init__(timeout=60)
         self.state = state
         self.guild_id = guild_id
-        
+
         current = self.state.get_provider(guild_id)
-        
-        yt_style = discord.ButtonStyle.primary if current == "youtube" else discord.ButtonStyle.secondary
-        saavn_style = discord.ButtonStyle.primary if current == "jiosaavn" else discord.ButtonStyle.secondary
-        sc_style = discord.ButtonStyle.primary if current == "soundcloud" else discord.ButtonStyle.secondary
-        spotify_style = discord.ButtonStyle.primary if current == "spotify" else discord.ButtonStyle.secondary
-        local_style = discord.ButtonStyle.primary if current == "local" else discord.ButtonStyle.secondary
-        
-        self.yt_btn = discord.ui.Button(label="YouTube", style=yt_style, custom_id="provider_youtube")
-        self.yt_btn.callback = self.choose_youtube
-        self.add_item(self.yt_btn)
-        
-        self.saavn_btn = discord.ui.Button(label="JioSaavn", style=saavn_style, custom_id="provider_jiosaavn")
-        self.saavn_btn.callback = self.choose_jiosaavn
-        self.add_item(self.saavn_btn)
+        for key, label, icon in self.PROVIDERS:
+            button = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary if current == key else discord.ButtonStyle.secondary,
+                custom_id=f"provider_{key}",
+            )
+            button.callback = self._make_callback(key, label, icon)
+            self.add_item(button)
 
-        self.sc_btn = discord.ui.Button(label="SoundCloud", style=sc_style, custom_id="provider_soundcloud")
-        self.sc_btn.callback = self.choose_soundcloud
-        self.add_item(self.sc_btn)
-
-        self.spotify_btn = discord.ui.Button(label="Spotify", style=spotify_style, custom_id="provider_spotify")
-        self.spotify_btn.callback = self.choose_spotify
-        self.add_item(self.spotify_btn)
-
-        self.local_btn = discord.ui.Button(label="Local Files", style=local_style, custom_id="provider_local")
-        self.local_btn.callback = self.choose_local
-        self.add_item(self.local_btn)
-
-    async def choose_youtube(self, interaction: discord.Interaction):
-        self.state.set_provider(self.guild_id, "youtube")
-        self.yt_btn.style = discord.ButtonStyle.success
-        self.saavn_btn.style = discord.ButtonStyle.secondary
-        self.sc_btn.style = discord.ButtonStyle.secondary
-        self.spotify_btn.style = discord.ButtonStyle.secondary
-        self.local_btn.style = discord.ButtonStyle.secondary
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Default music provider set to: **YouTube** 🎥", view=self)
-
-    async def choose_jiosaavn(self, interaction: discord.Interaction):
-        self.state.set_provider(self.guild_id, "jiosaavn")
-        self.yt_btn.style = discord.ButtonStyle.secondary
-        self.saavn_btn.style = discord.ButtonStyle.success
-        self.sc_btn.style = discord.ButtonStyle.secondary
-        self.spotify_btn.style = discord.ButtonStyle.secondary
-        self.local_btn.style = discord.ButtonStyle.secondary
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Default music provider set to: **JioSaavn** 🎵", view=self)
-
-    async def choose_soundcloud(self, interaction: discord.Interaction):
-        self.state.set_provider(self.guild_id, "soundcloud")
-        self.yt_btn.style = discord.ButtonStyle.secondary
-        self.saavn_btn.style = discord.ButtonStyle.secondary
-        self.sc_btn.style = discord.ButtonStyle.success
-        self.spotify_btn.style = discord.ButtonStyle.secondary
-        self.local_btn.style = discord.ButtonStyle.secondary
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Default music provider set to: **SoundCloud** 🧡", view=self)
-
-    async def choose_spotify(self, interaction: discord.Interaction):
-        self.state.set_provider(self.guild_id, "spotify")
-        self.yt_btn.style = discord.ButtonStyle.secondary
-        self.saavn_btn.style = discord.ButtonStyle.secondary
-        self.sc_btn.style = discord.ButtonStyle.secondary
-        self.spotify_btn.style = discord.ButtonStyle.success
-        self.local_btn.style = discord.ButtonStyle.secondary
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Default music provider set to: **Spotify** 🟢", view=self)
-
-    async def choose_local(self, interaction: discord.Interaction):
-        self.state.set_provider(self.guild_id, "local")
-        self.yt_btn.style = discord.ButtonStyle.secondary
-        self.saavn_btn.style = discord.ButtonStyle.secondary
-        self.sc_btn.style = discord.ButtonStyle.secondary
-        self.spotify_btn.style = discord.ButtonStyle.secondary
-        self.local_btn.style = discord.ButtonStyle.success
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Default music provider set to: **Local Files** 📁", view=self)
+    def _make_callback(self, key: str, label: str, icon: str):
+        async def callback(interaction: discord.Interaction):
+            self.state.set_provider(self.guild_id, key)
+            for item in self.children:
+                item.style = discord.ButtonStyle.success if item.custom_id == f"provider_{key}" else discord.ButtonStyle.secondary
+                item.disabled = True
+            await interaction.response.edit_message(content=f"Default music provider set to: **{label}** {icon}", view=self)
+        return callback
 
 
 class RadioSelect(discord.ui.Select):
@@ -827,7 +772,7 @@ class MusicCog(commands.Cog):
             if meta and meta.get("tracks"):
                 track = meta["tracks"][0]
                 search_query = f"{track['title']} {track['artist']}"
-                results = await search_songs(search_query, "youtube", limit=1)
+                results = await search_songs(search_query, "spotify", limit=1)
                 if results:
                     return await YouTubeHandler.get_audio_source_for_song(
                         results[0], volume, effects=effects, seek=seek, eq_preset=eq_preset
@@ -857,8 +802,11 @@ class MusicCog(commands.Cog):
                 return None, None
         else:
             provider = self.state.get_provider(guild_id)
-            if provider == "youtube" or provider == "spotify":
-                return await YouTubeHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
+            if provider in ("youtube", "ytmusic", "spotify"):
+                return await YouTubeHandler.get_audio_source(
+                    query, volume, effects=effects, seek=seek, eq_preset=eq_preset,
+                    music=provider != "youtube",
+                )
             elif provider == "soundcloud":
                 return await SoundCloudHandler.get_audio_source(query, volume, effects=effects, seek=seek, eq_preset=eq_preset)
             elif provider == "local":
@@ -879,7 +827,9 @@ class MusicCog(commands.Cog):
         elif song.get("provider") == "soundcloud":
             return await SoundCloudHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
         elif song.get("provider") == "local":
-            audio_source, _ = await self._get_audio_source_and_title(
+            # Callers unpack (source, title); returning the bare source here
+            # raised "cannot unpack" for every local track picked from search.
+            return await self._get_audio_source_and_title(
                 guild_id=0,
                 query=song.get("url"),
                 volume=volume,
@@ -887,7 +837,6 @@ class MusicCog(commands.Cog):
                 seek=seek,
                 eq_preset=eq_preset
             )
-            return audio_source
         else:
             return await JioSaavnHandler.get_audio_source_for_song(song, volume, effects=effects, seek=seek, eq_preset=eq_preset)
 
@@ -1385,8 +1334,8 @@ class MusicCog(commands.Cog):
                 track = tracks[0]
                 search_query = f"{track['title']} {track['artist']}"
                 results = await search_songs(search_query, provider, limit=1)
-                if not results and provider != "youtube":
-                    results = await search_songs(search_query, "youtube", limit=1)
+                if not results and provider not in ("youtube", "ytmusic", "spotify"):
+                    results = await search_songs(search_query, "spotify", limit=1)
                 if not results:
                     return await interaction.followup.send(f"Resolved Spotify link, but found no matches for '{search_query}'.")
                 song = results[0]
@@ -1412,8 +1361,8 @@ class MusicCog(commands.Cog):
                 first_track = tracks[0]
                 first_search = f"{first_track['title']} {first_track['artist']}"
                 first_results = await search_songs(first_search, provider, limit=1)
-                if not first_results and provider != "youtube":
-                    first_results = await search_songs(first_search, "youtube", limit=1)
+                if not first_results and provider not in ("youtube", "ytmusic", "spotify"):
+                    first_results = await search_songs(first_search, "spotify", limit=1)
                 if not first_results:
                     first_query = first_search
                     first_title = first_track['title']
@@ -1517,8 +1466,8 @@ class MusicCog(commands.Cog):
                 await self._play_audio(abs_path, interaction, title=title)
                 return await interaction.followup.send(f"Now playing local file: **{os.path.basename(abs_path)}**")
         else:
-            if provider == "youtube":
-                results = await search_songs(query, "youtube", limit=1)
+            if provider in ("youtube", "ytmusic"):
+                results = await search_songs(query, provider, limit=1)
                 if not results:
                     return await interaction.followup.send(f"No results found on YouTube for '{query}'")
                 song = results[0]
@@ -1533,7 +1482,7 @@ class MusicCog(commands.Cog):
                     return await interaction.followup.send(f"No results found in Local Files for '{query}'")
                 song = results[0]
             elif provider == "spotify":
-                results = await search_songs(query, "youtube", limit=1)
+                results = await search_songs(query, "spotify", limit=1)
                 if not results:
                     return await interaction.followup.send(f"No results found on YouTube (Spotify fallback) for '{query}'")
                 song = results[0]
@@ -1612,15 +1561,15 @@ class MusicCog(commands.Cog):
         
         provider = self.state.get_provider(interaction.guild.id)
         fallback_msg = ""
-        if provider == "youtube":
-            results = await search_songs(query, "youtube", limit=10)
+        if provider in ("youtube", "ytmusic"):
+            results = await search_songs(query, provider, limit=10)
         elif provider == "soundcloud":
             results = await search_songs(query, "soundcloud", limit=10)
         elif provider == "local":
             results = await search_songs(query, "local", limit=10)
         elif provider == "spotify":
-            results = await search_songs(query, "youtube", limit=10)
-            fallback_msg = " (Spotify fallback)"
+            results = await search_songs(query, "spotify", limit=10)
+            fallback_msg = " (matched on YouTube Music)"
         else:
             results = await search_songs(query, "jiosaavn", limit=10)
             

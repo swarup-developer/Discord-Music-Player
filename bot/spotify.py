@@ -9,7 +9,7 @@ import asyncio
 logger = logging.getLogger(__name__)
 
 SPOTIFY_URL_RE = re.compile(
-    r'https?://open\.spotify\.com/(track|album|playlist)/([a-zA-Z0-9]+)'
+    r'https?://open\.spotify\.com/(?:intl-[a-zA-Z_-]+/)?(track|album|playlist)/([a-zA-Z0-9]+)'
 )
 
 class SpotifyHandler:

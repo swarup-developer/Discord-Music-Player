@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Node dependencies (local YouTube resolver)
+node_modules/
+
 # Local secrets and runtime artifacts
 .env
 cookies.txt
@@ -28,3 +31,6 @@ deploy_*.py
 # Temp debug/maintenance scripts (never commit)
 check_logs.py
 *_logs.py
+ytjs/.cache/
+cookies.txt*
+ytjs/.browser-profile/

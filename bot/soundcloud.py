@@ -7,6 +7,10 @@ import discord
 import httpx
 import yt_dlp
 
+from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
+
+_FILE_BEFORE_OPTIONS = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
+
 logger = logging.getLogger(__name__)
 
 # Options for yt-dlp to query SoundCloud
@@ -141,34 +145,12 @@ class SoundCloudHandler:
                     return None, None
                 
                 source_path = temp_path
-                ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-                if seek and seek > 0:
-                    ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-                
-                ffmpeg_options = "-vn -flags low_delay"
-                filters = []
-                if eq_preset:
-                    if eq_preset == "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    elif eq_preset == "vocal":
-                        filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                    elif eq_preset == "treble":
-                        filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                    elif eq_preset == "lofi":
-                        filters.append("highpass=f=300,lowpass=f=4000")
-                    elif eq_preset == "acoustic":
-                        filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+                ffmpeg_before_options = apply_seek(_FILE_BEFORE_OPTIONS, seek)
+                ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
 
-                if effects:
-                    if "bassboost" in effects and eq_preset != "bassboost":
-                        filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                    if "nightcore" in effects:
-                        filters.append("asetrate=48000*1.25")
-                filters.append("aresample=osr=48000:osf=s16")
-                ffmpeg_options += f' -af "{",".join(filters)}"'
-                
-                source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-                source.temp_file_path = temp_path
+                source = make_stream_source(
+                    source_path, ffmpeg_before_options, ffmpeg_options, temp_file_path=temp_path
+                )
                 return source, title
             else:
                 results = await cls.search(query, limit=1)
@@ -196,34 +178,12 @@ class SoundCloudHandler:
                 return None, None
             
             source_path = temp_path
-            ffmpeg_before_options = "-nostdin -probesize 100000 -analyzeduration 100000 -fflags nobuffer"
-            if seek and seek > 0:
-                ffmpeg_before_options = f"-ss {seek} " + ffmpeg_before_options
-            
-            ffmpeg_options = "-vn -flags low_delay"
-            filters = []
-            if eq_preset:
-                if eq_preset == "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                elif eq_preset == "vocal":
-                    filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-                elif eq_preset == "treble":
-                    filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-                elif eq_preset == "lofi":
-                    filters.append("highpass=f=300,lowpass=f=4000")
-                elif eq_preset == "acoustic":
-                    filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
+            ffmpeg_before_options = apply_seek(_FILE_BEFORE_OPTIONS, seek)
+            ffmpeg_options = build_ffmpeg_options(effects, eq_preset)
 
-            if effects:
-                if "bassboost" in effects and eq_preset != "bassboost":
-                    filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-                if "nightcore" in effects:
-                    filters.append("asetrate=48000*1.25")
-            filters.append("aresample=osr=48000:osf=s16")
-            ffmpeg_options += f' -af "{",".join(filters)}"'
-            
-            source = discord.FFmpegPCMAudio(source_path, before_options=ffmpeg_before_options, options=ffmpeg_options)
-            source.temp_file_path = temp_path
+            source = make_stream_source(
+                source_path, ffmpeg_before_options, ffmpeg_options, temp_file_path=temp_path
+            )
             return source, title
         except Exception as e:
             logger.error(f"SoundCloud get_audio_source_for_song error: {e}")

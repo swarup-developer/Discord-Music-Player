@@ -18,7 +18,16 @@ if exist ..\bgutil-ytdlp-pot-provider\server\build\main.js (
     exit /b 1
 )
 
-:: 2. Launch the Discord bot in the current window
+:: 2. Launch the local YouTube resolver (youtubei.js) in a separate window
+echo --> Launching local YouTube resolver in background...
+if exist ytjs\node_modules\youtubei.js (
+    start "dcBot - YouTube Resolver" cmd /k "node ytjs\server.mjs"
+) else (
+    echo Warning: ytjs dependencies not installed. YouTube playback will have no
+    echo fallback if yt-dlp fails. Run setup_windows.bat to install them.
+)
+
+:: 3. Launch the Discord bot in the current window
 echo --> Starting Discord bot...
 if exist .venv\Scripts\python.exe (
     .venv\Scripts\python.exe dc.py

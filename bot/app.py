@@ -11,6 +11,7 @@ from .cogs_help import HelpCog
 from .cogs_music import MusicCog
 from .opus_bootstrap import ensure_opus_loaded
 from .state import BotState
+from .youtube import check_pot_provider, check_youtube_cookies, check_ytjs_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ class Bot(commands.Bot):
     async def setup_hook(self):
         if not ensure_opus_loaded():
             logger.warning("Opus library not loaded. Voice mode will not work until Opus is installed.")
+        check_pot_provider()
+        check_youtube_cookies()
+        check_ytjs_resolver()
         await self.add_cog(HelpCog(self))
         await self.add_cog(ControlCog(self))
         await self.add_cog(MusicCog(self))

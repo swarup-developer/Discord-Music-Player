@@ -127,10 +127,51 @@ def run_remote_sudo(client, command, password, description=None):
     stdin, stdout, stderr = client.exec_command(command, get_pty=True)
     stdin.write(password + "\n")
     stdin.flush()
-    out = stdout.read().decode("utf-8", errors="replace").strip()
-    err = stderr.read().decode("utf-8", errors="replace").strip()
+    out = stdout.read().decode("utf-8", errors="replace")
+    err = stderr.read().decode("utf-8", errors="replace")
     status = stdout.channel.recv_exit_status()
+    # The pty echoes the password back; never let it reach the console/logs.
+    out = "\n".join(l for l in out.splitlines() if l.strip() != password and "[sudo] password" not in l).strip()
+    err = err.replace(password, "***").strip()
     return status, out, err
+
+
+def ensure_systemd(client, password, name, command, directory, user, out_log, err_log):
+    """Install/refresh a systemd service and (re)start it.
+
+    Used instead of supervisor for new services: one broken config elsewhere in
+    /etc/supervisor/conf.d makes `supervisorctl reread` fail for everything.
+    """
+    unit = (
+        "[Unit]\n"
+        f"Description=dcBot {name}\n"
+        "After=network-online.target warp-svc.service\n"
+        "Wants=network-online.target\n\n"
+        "[Service]\n"
+        f"User={user}\n"
+        f"WorkingDirectory={directory}\n"
+        f"ExecStart=/bin/sh -c 'exec \"$(command -v node)\" {command}'\n"
+        "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+        "Restart=always\n"
+        "RestartSec=30\n"
+        # Background work: never compete with the bot for CPU, disk or RAM.
+        "Nice=19\n"
+        "IOSchedulingClass=idle\n"
+        "CPUQuota=50%\n"
+        "MemoryMax=450M\n"
+        f"StandardOutput=append:{out_log}\n"
+        f"StandardError=append:{err_log}\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    run_remote_sudo(client, f"sudo tee /etc/systemd/system/{name}.service > /dev/null <<'EOF'\n" + unit + "EOF",
+                    password, f"Writing systemd unit for {name}...")
+    status, out, err = run_remote_sudo(
+        client, f"sudo systemctl daemon-reload && sudo systemctl enable {name} >/dev/null 2>&1 && "
+                f"sudo systemctl restart {name} && systemctl is-active {name}",
+        password, f"Starting {name}...",
+    )
+    print(f"    {name}: {out.splitlines()[-1] if out else err}")
 
 
 def deploy():
@@ -224,11 +265,11 @@ def deploy():
         # uploaded because it is platform-specific and large.
         status, out, err = run_remote(
             client,
-            f"cd {remote_dir}/ytjs && node -e \"const v=require('./node_modules/youtubei.js/package.json').version; process.exit(v.startsWith('18.') ? 0 : 1)\"",
+            f"cd {remote_dir}/ytjs && node -e \"const v=require('./node_modules/youtubei.js/package.json').version; require('./node_modules/playwright/package.json'); process.exit(v.startsWith('18.') ? 0 : 1)\"",
             "Checking local YouTube resolver dependency...",
         )
         if status == 0:
-            print("    OK: youtubei.js 18.x already installed; skipping npm install.")
+            print("    OK: youtubei.js 18.x and playwright already installed; skipping npm install.")
         else:
             status, out, err = run_remote(
                 client,
@@ -240,6 +281,24 @@ def deploy():
                       "fallback if yt-dlp fails.")
                 if err:
                     print(err[-1500:])
+
+        # Headless Chromium for the cookie refresher. `install` is a no-op when
+        # the browser is already present; install-deps needs root.
+        run_remote(client, f"cd {remote_dir}/ytjs && npx playwright install chromium",
+                   "Ensuring headless Chromium for the cookie refresher...")
+        status, out, err = run_remote(
+            client, "ldd $(ls -d ~/.cache/ms-playwright/chromium_headless_shell-*/chrome-*/headless_shell | tail -1) | grep -c 'not found'",
+            "Checking Chromium system libraries...",
+        )
+        if out.strip() not in ("", "0"):
+            run_remote_sudo(client, f"cd {remote_dir}/ytjs && sudo npx playwright install-deps chromium",
+                            password, "Installing Chromium system libraries...")
+
+        ensure_systemd(
+            client, password, "dcbot-cookies",
+            f"{remote_dir}/ytjs/cookie_refresher.mjs", f"{remote_dir}/ytjs", username,
+            f"{remote_dir}/ytjs/cookies.out.log", f"{remote_dir}/ytjs/cookies.err.log",
+        )
 
         # Make sure supervisor knows about the resolver. A first deploy onto a
         # server set up before ytjs existed has no such program, so write the

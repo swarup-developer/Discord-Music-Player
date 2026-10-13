@@ -13,15 +13,18 @@ import discord
 from Crypto.Cipher import DES
 from Crypto.Util.Padding import unpad
 
+from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
+
 logger = logging.getLogger(__name__)
 HAS_CRYPTO = True
 
 
 class JioSaavnEngine:
     AUTOCOMPLETE_URL = "https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&includeMetaTags=1&query="
-    # NOTE: search.getResults is intentionally removed — it stopped returning
-    # results on JioSaavn's side as of mid-2026. Search now uses autocomplete.get
-    # + song.getDetails instead (see search() method).
+    # search.getResults works again (verified Oct 2026) and returns full song
+    # details -- including encrypted_media_url -- in a single request, ordered
+    # by JioSaavn's own relevance. autocomplete.get stays as the fallback.
+    SEARCH_URL = "https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&p=1&n=20&q="
     SONG_DETAILS_URL = "https://www.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0%3F_marker%3D0&_format=json&pids="
     DES_KEY = b"38346591"
 
@@ -62,6 +65,23 @@ class JioSaavnEngine:
             return None
 
     async def search(self, query: str, page: int = 1) -> List[Dict[str, Any]]:
+        """Search songs: search.getResults first, autocomplete as fallback."""
+        try:
+            resp = await self.client.get(self.SEARCH_URL + urllib.parse.quote(query))
+            if resp.status_code == 200:
+                results = [
+                    {**song, "provider": "jiosaavn"}
+                    for song in (resp.json().get("results") or [])
+                    if isinstance(song, dict) and song.get("id")
+                ]
+                if results:
+                    return self._rank_results(results, query)
+            logger.info("search.getResults gave nothing for %r; using autocomplete", query)
+        except Exception as e:
+            logger.warning(f"search.getResults failed, using autocomplete: {e}")
+        return await self._autocomplete_search(query)
+
+    async def _autocomplete_search(self, query: str) -> List[Dict[str, Any]]:
         """Search songs via autocomplete.get + song.getDetails batch fetch.
 
         NOTE: search.getResults (the old primary endpoint) now always returns
@@ -71,7 +91,6 @@ class JioSaavnEngine:
         """
         try:
             base_url = self.AUTOCOMPLETE_URL + urllib.parse.quote(query)
-            base_resp = await self.client.get(base_url)
 
             def _parse_autocomplete_data(data: dict) -> List[str]:
                 """Return ordered list of song PIDs from a parsed autocomplete payload."""
@@ -128,7 +147,9 @@ class JioSaavnEngine:
                     data = json.loads(re.sub(r'\(From "([^"]+)"\)', r"(From '\1')", resp.text))
                 except Exception:
                     return [], {}
-                return _parse_autocomplete_data(data), data            # Fire base query AND a 'hindi' disambiguation in parallel.
+                return _parse_autocomplete_data(data), data
+
+            # Fire base query AND a 'hindi' disambiguation in parallel.
             # The ' hindi' suffix reliably makes JioSaavn surface the original
             # Bollywood song even when the bare query returns only lofi/regional
             # variants (confirmed empirically: 'Kesariya hindi' → Brahmastra original).
@@ -190,43 +211,88 @@ class JioSaavnEngine:
     }
 
     def _rank_results(self, results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-        """Sort search results so the most relevant original song comes first.
+        """Sort results so the right, current song comes first.
 
-        Tier 0 — title contains ALL query words (direct match, e.g. "Kesariya" in title)
-        Tier 1 — title contains SOME query words (partial match)
-        Tier 2 — title contains NONE of the query words (unrelated, from album fallback)
-        Tier 3 — non-original version (lofi / slowed / remix) unless query asked for it
-
-        Within each tier, play_count descending breaks ties.
+        Key, in order:
+          1. tier: 0 exact title, 1 all query words in title, 2 some, 3 none,
+             4 non-original (lofi/slowed/remix...) unless the query asked for it
+          2. obscure: songs with < 5% of the tier's top play count go below
+             established ones, so a fresh 2k-play cover cannot beat the hit
+          3. newest year first -- new releases surface above older songs
+             with the same title
+          4. play count, then JioSaavn's own order (stable sort)
         """
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
         query_wants_remix = any(kw in query_lower for kw in self._NON_ORIGINAL_KEYWORDS)
-        # Meaningful query words (strip short stop words)
         query_words = [w for w in re.split(r"\s+", query_lower) if len(w) > 2]
+        norm_query = self.normalize_string(query_lower)
+
+        def _int(v) -> int:
+            try:
+                return int(v or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _title(song):
+            return self.format_string(song.get("song") or song.get("title") or "").lower()
+
+        def _tier(song) -> int:
+            title = _title(song)
+            if not query_wants_remix and any(kw in title for kw in self._NON_ORIGINAL_KEYWORDS):
+                return 4
+            base_title = re.sub(r"\s*\(.*?\)", "", title)
+            if norm_query and self.normalize_string(base_title) == norm_query:
+                return 0
+            if not query_words:
+                return 1
+            matched = sum(1 for w in query_words if w in title)
+            if matched == len(query_words):
+                return 1
+            return 2 if matched else 3
+
+        # Labels re-upload the same recording on compilations every year
+        # ("Tum Hi Ho (From 'Aashiqui 2')" 2026 ...). Collapse those to the
+        # most-played copy so "newest first" ranks genuinely new songs, not
+        # fresh re-uploads of an old one.
+        def _identity(song):
+            base = self.normalize_string(re.sub(r"\s*\(.*?\)", "", _title(song)))
+            people = song.get("singers") or song.get("primary_artists") or ""
+            if not people:
+                more = song.get("more_info") or {}
+                people = more.get("singers") or "" if isinstance(more, dict) else ""
+            names = frozenset(self.normalize_string(n) for n in self.format_string(people).split(",") if n.strip())
+            return base, names
+
+        # Same base title + at least one shared singer = same song. Keep the
+        # most-played copy; on a near tie (linked copies share play counts)
+        # keep the oldest, i.e. the original album rather than a compilation.
+        kept: List[tuple] = []  # (base, names, song)
+        for song in results:
+            base, names = _identity(song)
+            for i, (kbase, knames, ksong) in enumerate(kept):
+                if kbase == base and (names & knames or not names or not knames):
+                    plays, kplays = _int(song.get("play_count")), _int(ksong.get("play_count"))
+                    near_tie = abs(plays - kplays) <= max(plays, kplays) * 0.01
+                    if (near_tie and _int(song.get("year")) < _int(ksong.get("year"))) or (not near_tie and plays > kplays):
+                        kept[i] = (kbase, knames | names, song)
+                    else:
+                        kept[i] = (kbase, knames | names, ksong)
+                    break
+            else:
+                kept.append((base, names, song))
+        results = [k[2] for k in kept]
+
+        tiers = {id(s): _tier(s) for s in results}
+        top_plays: Dict[int, int] = {}
+        for song in results:
+            t = tiers[id(song)]
+            top_plays[t] = max(top_plays.get(t, 0), _int(song.get("play_count")))
 
         def _score(song: Dict[str, Any]) -> tuple:
-            title = (song.get("song") or song.get("title") or "").lower()
-            plays = int(song.get("play_count") or 0)
-
-            is_non_original = (
-                not query_wants_remix
-                and any(kw in title for kw in self._NON_ORIGINAL_KEYWORDS)
-            )
-            if is_non_original:
-                return (3, -plays)
-
-            if query_words:
-                matched = sum(1 for w in query_words if w in title)
-                if matched == len(query_words):
-                    tier = 0  # full match
-                elif matched > 0:
-                    tier = 1  # partial match
-                else:
-                    tier = 2  # unrelated (album-spillover songs)
-            else:
-                tier = 1
-
-            return (tier, -plays)
+            t = tiers[id(song)]
+            plays = _int(song.get("play_count"))
+            obscure = plays < top_plays.get(t, 0) * 0.05
+            return (t, obscure, -_int(song.get("year")), -plays)
 
         return sorted(results, key=_score)
 
@@ -318,30 +384,9 @@ class JioSaavnHandler:
                 "-reconnect_delay_max", "5",
                 "-reconnect_at_eof", "1",
             ]
-        if seek and seek > 0:
-            before_parts = [f"-ss {seek}"] + before_parts
 
-        filters = []
-        if eq_preset == "bassboost":
-            filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-        elif eq_preset == "vocal":
-            filters.append("equalizer=f=1000:width_type=q:width=1:g=5,equalizer=f=3000:width_type=q:width=1:g=3")
-        elif eq_preset == "treble":
-            filters.append("equalizer=f=8000:width_type=o:width=2:g=6")
-        elif eq_preset == "lofi":
-            filters.append("highpass=f=300,lowpass=f=4000")
-        elif eq_preset == "acoustic":
-            filters.append("equalizer=f=120:width_type=o:width=2:g=3,equalizer=f=2000:width_type=o:width=2:g=2,equalizer=f=8000:width_type=o:width=2:g=3")
-
-        if effects:
-            if "bassboost" in effects and eq_preset != "bassboost":
-                filters.append("equalizer=f=60:width_type=o:width=2:g=8")
-            if "nightcore" in effects:
-                filters.append("asetrate=48000*1.25")
-        filters.append("aresample=osr=48000:osf=s16")
-
-        options = f'-vn -flags low_delay -af "{",".join(filters)}"'
-        return " ".join(before_parts), options
+        before = apply_seek(" ".join(before_parts), seek)
+        return before, build_ffmpeg_options(effects, eq_preset)
 
     @classmethod
     async def get_audio_source(cls, query: str, volume: float = 1.0, effects: Optional[list[str]] = None, seek: Optional[float] = None, eq_preset: Optional[str] = None):
@@ -374,8 +419,7 @@ class JioSaavnHandler:
 
             # Stream directly from CDN — no temp-file download needed.
             before_opts, opts = cls._build_ffmpeg_options(seek, effects, eq_preset, is_http=True)
-            source = discord.FFmpegPCMAudio(media_url, before_options=before_opts, options=opts)
-            source.temp_file_path = None  # No temp file; cleanup in cogs_music is safe.
+            source = make_stream_source(media_url, before_opts, opts)
             title = cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
             return source, title
         except Exception as e:
@@ -414,8 +458,7 @@ class JioSaavnHandler:
 
             # Stream directly from CDN — no temp-file download needed.
             before_opts, opts = cls._build_ffmpeg_options(seek, effects, eq_preset, is_http=True)
-            source = discord.FFmpegPCMAudio(media_url, before_options=before_opts, options=opts)
-            source.temp_file_path = None  # No temp file; cleanup in cogs_music is safe.
+            source = make_stream_source(media_url, before_opts, opts)
             title = cls.engine.format_string(song_data.get("song") or song_data.get("title") or "Unknown")
             return source, title
         except Exception as e:

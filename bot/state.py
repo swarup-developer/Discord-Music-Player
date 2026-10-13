@@ -42,6 +42,10 @@ class GuildSession:
     # Set by the Next/skip action so repeat-one (loop_mode="song") advances to
     # the next queue item instead of replaying the same song.
     skip_requested: bool = False
+    # Resolved input + FFmpeg input options of the current playback, so a seek
+    # or EQ change can restart FFmpeg against the already-resolved stream
+    # instead of re-running provider search and extraction.
+    stream_cache: Optional[dict] = None
 
 
 class BotState:
@@ -100,6 +104,7 @@ class BotState:
         session.temp_file_path = None
         session.advance_queue_on_stop = True
         session.current_song_data = None
+        session.stream_cache = None
         session.history.clear()
         # Keep loop_modes, effects, and providers in memory so settings persist across sessions.
 
@@ -140,7 +145,9 @@ class BotState:
         return res
 
     def get_provider(self, guild_id: int) -> str:
-        return self.providers.get(guild_id, "jiosaavn")
+        provider = self.providers.get(guild_id, "jiosaavn")
+        # The plain YouTube provider was replaced by YouTube Music.
+        return "ytmusic" if provider == "youtube" else provider
 
     def set_provider(self, guild_id: int, provider: str) -> None:
         self.providers[guild_id] = provider
