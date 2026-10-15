@@ -339,7 +339,11 @@ class MusicCog(commands.Cog):
             self.results = results[:10]
 
             for index, song in enumerate(self.results, 1):
-                self.add_item(cog.SearchResultButton(cog, song, str(index)))
+                name = str(song.get("song") or song.get("title") or "Unknown").strip()
+                label = f"{index}. {name}"
+                if len(label) > 80:  # Discord button label limit
+                    label = label[:77] + "..."
+                self.add_item(cog.SearchResultButton(cog, song, label))
 
         async def on_timeout(self) -> None:
             for item in self.children:
@@ -669,8 +673,15 @@ class MusicCog(commands.Cog):
         except discord.HTTPException as e:
             logger.warning(f"Failed to defer interaction: {e}")
 
-    def _stop_current_track_for_manual_replace(self, guild_id: int) -> None:
+    def _stop_current_track_for_manual_replace(self, guild_id: int, record_history: bool = True) -> None:
         session = self._session(guild_id)
+        # The stopped track's `after` callback is stale by the time it runs
+        # (generation bumped), so record history here or Prev never works.
+        old_data = session.current_song_data
+        if record_history and old_data and (not session.history or session.history[-1] != old_data):
+            session.history.append(old_data)
+            if len(session.history) > 20:
+                session.history.pop(0)
         if not session.voice_client:
             return
         if session.voice_client.is_playing() or session.voice_client.is_paused():
@@ -1085,7 +1096,21 @@ class MusicCog(commands.Cog):
             else:
                 next_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"], song_data=last_song_data["song"])
         elif not queue:
-            return
+            if not (skip_requested and last_song_data):
+                return
+            # Next with an empty queue: play a related song instead of doing nothing.
+            seen = {h.get("title") for h in session.history} | {last_song_data.get("title")}
+            seen_ids = {h["song"].get("id") for h in session.history if h.get("type") == "song"}
+            try:
+                related = await search_songs(last_song_data.get("title") or "", self.state.get_provider(guild_id), limit=8)
+            except Exception:
+                related = []
+            pick = next((s for s in related or []
+                         if s.get("id") not in seen_ids
+                         and (s.get("song") or s.get("title")) not in seen), None)
+            if not pick:
+                return
+            next_item = QueueItem(query=pick.get("id"), title=pick.get("song") or pick.get("title"), song_data=pick)
         else:
             next_item = queue.popleft()
             if loop_mode == "queue" and last_song_data:
@@ -1143,7 +1168,7 @@ class MusicCog(commands.Cog):
                 )
             queue.appendleft(item)
 
-        self._stop_current_track_for_manual_replace(guild_id)
+        self._stop_current_track_for_manual_replace(guild_id, record_history=False)
         session.current_song_data = None
 
         if prev_track["type"] == "query":
