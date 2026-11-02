@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
+## [2026-11-02] - Bot no longer freezes
+
+### Fixed
+
+- The bot froze for 10-30 seconds at a time, so Discord showed it as not
+  responding, voice connections dropped, commands failed with "Unknown
+  interaction" and music started late. A forced garbage collection every 10
+  minutes blocked the bot on the low-memory server; it now runs once at
+  startup only.
+- The background TV health check used too much of the server: it now probes 4
+  streams at a time instead of 12, pauses between batches, and saves its cache
+  without blocking the bot.
+
 ## [2026-10-13] - Live TV, radio and your own files
 
 ### Added

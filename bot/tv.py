@@ -82,7 +82,7 @@ COUNTRY_NAME_TO_CODE = {name.lower(): code for code, name in COUNTRY_CODES.items
 HEALTH_FILE = "iptv_health_v2.json"  # v2: probes follow master -> variant playlist
 HEALTH_TTL = 12 * 60 * 60        # re-probe a channel after 12 hours
 PLAYLIST_REFRESH = 24 * 60 * 60  # re-download the iptv-org playlists daily
-PROBE_CONCURRENCY = 12
+PROBE_CONCURRENCY = 4  # low: the 1GB/2-core server also has to stream music
 _RESOLUTION_RE = re.compile(r"\s*\((\d{3,4})[pi]\)")
 
 
@@ -106,11 +106,11 @@ class IPTVManager:
             cls._health = {}
 
     @classmethod
-    def _save_health(cls) -> None:
+    def _save_health(cls, health: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         try:
             tmp = HEALTH_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cls._health, f)
+                json.dump(cls._health if health is None else health, f)
             os.replace(tmp, HEALTH_FILE)
         except OSError as e:
             logger.warning(f"Could not save IPTV health cache: {e}")
@@ -182,7 +182,9 @@ class IPTVManager:
                         cls._health[ch["url"]] = {"ok": ok, "t": time.time()}
                     for i in range(0, len(stale), 200):
                         await asyncio.gather(*(run(ch) for ch in stale[i:i + 200]))
-                        cls._save_health()
+                        # Writing the ~1MB cache blocked the event loop; do it off-loop.
+                        await asyncio.to_thread(cls._save_health, dict(cls._health))
+                        await asyncio.sleep(2)
                 if stale:
                     alive = sum(1 for ch in cls._channels if cls._health.get(ch["url"], {}).get("ok"))
                     logger.info(f"IPTV health check done: {alive}/{len(cls._channels)} streams alive.")
