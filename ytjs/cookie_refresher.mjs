@@ -20,6 +20,11 @@ const COOKIE_FILE = path.join(ROOT, 'cookies.txt');
 const PROFILE_DIR = path.join(HERE, '.browser-profile');
 const REFRESH_HOURS = Number(process.env.COOKIE_REFRESH_HOURS || 6);
 const MARKER = '# dcbot-cookie-refresher';
+// Drop a Netscape cookies.txt exported from a browser signed in to YouTube here
+// (or as signin_cookies.txt in the bot folder). It is imported into the
+// profile once, then deleted; from then on every refresh rotates the signed-in
+// cookies instead of anonymous ones.
+const IMPORT_FILES = [path.join(HERE, 'signin_cookies.txt'), path.join(ROOT, 'signin_cookies.txt')];
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -43,6 +48,39 @@ function toNetscape(cookies) {
   return lines.join('\n') + '\n';
 }
 
+function fromNetscape(text) {
+  const cookies = [];
+  for (let line of text.split(/\r?\n/)) {
+    let httpOnly = false;
+    if (line.startsWith('#HttpOnly_')) { httpOnly = true; line = line.slice(10); }
+    if (!line || line.startsWith('#')) continue;
+    const f = line.split('\t');
+    if (f.length < 7) continue;
+    const [domain, , cpath, secure, expires, name, value] = f;
+    if (!/(^|\.)(youtube|google)\.com$/.test(domain)) continue;
+    const exp = Number(expires);
+    cookies.push({ name, value, domain, path: cpath || '/', secure: secure === 'TRUE', httpOnly,
+      sameSite: 'Lax', expires: exp > 0 ? exp : -1 });
+  }
+  return cookies;
+}
+
+async function importSignin(context) {
+  for (const file of IMPORT_FILES) {
+    if (!fs.existsSync(file)) continue;
+    const cookies = fromNetscape(fs.readFileSync(file, 'utf8'));
+    if (!cookies.some((c) => c.name === 'SAPISID' || c.name === '__Secure-1PSID')) {
+      log(`${path.basename(file)} has no YouTube login cookies; export it while signed in. Ignored.`);
+      fs.renameSync(file, file + '.invalid');
+      continue;
+    }
+    await context.clearCookies();
+    await context.addCookies(cookies);
+    fs.rmSync(file); // the profile holds them now; don't leave a second copy around
+    log(`Imported ${cookies.length} signed-in cookies from ${path.basename(file)}.`);
+  }
+}
+
 async function refresh() {
   const proxy = readProxy();
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
@@ -53,6 +91,7 @@ async function refresh() {
       '--disable-dev-shm-usage', '--mute-audio', '--js-flags=--max-old-space-size=256'],
   });
   try {
+    await importSignin(context);
     // The server has ~1GB RAM shared with the bot: skip everything that is not
     // needed for YouTube to set its cookies.
     await context.route('**/*', (route) =>

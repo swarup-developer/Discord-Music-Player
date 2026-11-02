@@ -63,6 +63,10 @@ class BotState:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.settings_file = os.path.join(project_root, "server_settings.json")
         self._load_settings()
+        # Saved playlists: {guild_id: {name: [{"query", "title", "song_data"}, ...]}}
+        self.playlists_file = os.path.join(project_root, "playlists.json")
+        self.playlists: dict[int, dict[str, list[dict]]] = {}
+        self._load_playlists()
 
     def is_active_in_other_guild(self, guild_id: int) -> bool:
         for session_guild_id, session in self.sessions.items():
@@ -199,3 +203,35 @@ class BotState:
                 json.dump(data, f, indent=4)
         except Exception:
             pass
+
+    def _load_playlists(self):
+        try:
+            with open(self.playlists_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.playlists = {int(gid): dict(lists) for gid, lists in data.items()}
+        except (OSError, ValueError):
+            self.playlists = {}
+
+    def _save_playlists(self):
+        try:
+            tmp = self.playlists_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({str(gid): lists for gid, lists in self.playlists.items()}, f)
+            os.replace(tmp, self.playlists_file)
+        except Exception:
+            pass
+
+    def playlists_for(self, guild_id: int) -> dict[str, list[dict]]:
+        return self.playlists.get(guild_id, {})
+
+    def save_playlist(self, guild_id: int, name: str, tracks: list[dict]) -> None:
+        self.playlists.setdefault(guild_id, {})[name] = tracks
+        self._save_playlists()
+
+    def delete_playlist(self, guild_id: int, name: str) -> bool:
+        lists = self.playlists.get(guild_id, {})
+        if name not in lists:
+            return False
+        del lists[name]
+        self._save_playlists()
+        return True

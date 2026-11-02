@@ -21,6 +21,7 @@ DEPLOY_EXCLUDES = {
     "check_deploy.py",
     "fix_pot.bat",
     "iptv_lang_cache.json",
+    "playlists.json",
 }
 DEPLOY_EXCLUDE_DIRS = {
     ".git", ".freebuff", ".venv", "venv", "__pycache__", "audio", "node_modules"

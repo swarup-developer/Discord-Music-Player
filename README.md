@@ -92,7 +92,7 @@ YouTube blocks most server and datacenter IP addresses with the message "Sign in
 
 The refresher runs at the lowest CPU and disk priority, limited to 450 MB of memory and 50% CPU, so it does not slow the bot down even on a 1 GB server.
 
-**Signed-in cookies.** The refresher collects anonymous visitor cookies, which is enough for playback through WARP. It cannot sign in to Google for you. If you need signed-in cookies, for example for age-restricted videos, sign a dedicated spare Google account into the refresher's browser profile (`ytjs/.browser-profile`) once. The refresher then keeps those cookies fresh. Never use your main Google account.
+**Signed-in cookies.** The refresher collects anonymous visitor cookies, which is enough for playback through WARP. It cannot sign in to Google for you. To use signed-in cookies, for example for age-restricted videos, open a private browser window, sign in to a spare Google account on YouTube, export the cookies in Netscape format and copy the file to the server as `signin_cookies.txt` in the bot folder (or in `ytjs/`). On its next run the refresher imports them into its browser profile, deletes the file and from then on keeps the signed-in cookies fresh in `cookies.txt` automatically. Run `sudo systemctl restart dcbot-cookies` to import at once. Never use your main Google account.
 
 **Without WARP.** You can export cookies manually instead. Open a private browser window, sign in to a spare Google account on YouTube, play a video, export the cookies in Netscape format, save them as `cookies.txt` in the project folder, and close the window without signing out. The resolver picks up a new `cookies.txt` without a restart.
 
@@ -116,6 +116,9 @@ Type `/` in Discord to see all commands. Use `/join` first so the bot is in your
 |---|---|
 | `/queue` | Show the queue |
 | `/remove <number>` | Remove a song from the queue by its number in `/queue` |
+| `/playlist save <name>` | Save the current song and the queue as a playlist for this server |
+| `/playlist load <name>` | Play a saved playlist, or add it to the queue if music is playing (optional shuffle) |
+| `/playlist list` / `/playlist delete <name>` | Show or delete saved playlists |
 | `/skip` | Skip to the next song |
 | `/pause`, `/resume` | Pause or resume playback |
 | `/stop` | Stop playback and clear the queue |

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
 from typing import Optional, List, Dict, Any
@@ -2182,6 +2183,131 @@ class MusicCog(commands.Cog):
 
     async def cog_unload(self):
         self.bot.tree.remove_command(self.play_files_menu.name, type=self.play_files_menu.type)
+
+    playlist_group = discord.app_commands.Group(name="playlist", description="Save and replay song lists for this server")
+
+    @staticmethod
+    def _playlist_entry(query: str, title: str, song_data: Optional[dict]) -> Optional[dict]:
+        # Discord attachment links expire, so files played from chat can't be saved.
+        if query and ("cdn.discordapp" in query or "media.discordapp" in query):
+            return None
+        return {"query": query, "title": title, "song_data": song_data}
+
+    async def _playlist_name_autocomplete(self, interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
+        if not interaction.guild:
+            return []
+        names = self.state.playlists_for(interaction.guild.id)
+        return [
+            discord.app_commands.Choice(name=f"{n} ({len(t)} songs)"[:100], value=n)
+            for n in sorted(names) if current.lower() in n.lower()
+        ][:25]
+
+    @playlist_group.command(name="save", description="Save the current song and the queue as a playlist")
+    @discord.app_commands.describe(name="Playlist name (saving with an existing name replaces it)")
+    async def playlist_save(self, interaction: discord.Interaction, name: str):
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        name = name.strip()[:50]
+        if not name:
+            return await interaction.response.send_message("Give the playlist a name.", ephemeral=True)
+        session = self._session(interaction.guild.id)
+        tracks = []
+        current = session.current_song_data
+        if current:
+            if current["type"] == "song":
+                song = current["song"]
+                entry = self._playlist_entry(song.get("url") or song.get("id") or current["title"], current["title"], song)
+            else:
+                entry = self._playlist_entry(current["query"], current["title"], None)
+            if entry:
+                tracks.append(entry)
+        for item in self.state.queue_for(interaction.guild.id):
+            entry = self._playlist_entry(item.query, item.title if item.title != "Unknown" else item.query, item.song_data)
+            if entry:
+                tracks.append(entry)
+        if not tracks:
+            return await interaction.response.send_message(
+                "Nothing to save. Play some songs or queue them first.", ephemeral=True
+            )
+        if name not in self.state.playlists_for(interaction.guild.id) and len(self.state.playlists_for(interaction.guild.id)) >= 25:
+            return await interaction.response.send_message(
+                "This server already has 25 playlists. Delete one with `/playlist delete` first.", ephemeral=True
+            )
+        self.state.save_playlist(interaction.guild.id, name, tracks[:200])
+        await interaction.response.send_message(f"Saved playlist **{name}** with {min(len(tracks), 200)} songs.")
+
+    @playlist_group.command(name="load", description="Play a saved playlist (adds it to the queue if music is playing)")
+    @discord.app_commands.describe(name="Playlist to play", shuffle="Shuffle the songs before adding them")
+    async def playlist_load(self, interaction: discord.Interaction, name: str, shuffle: bool = False):
+        await self._ensure_deferred(interaction)
+        if not interaction.guild:
+            return await interaction.followup.send("This only works in a server.")
+        tracks = list(self.state.playlists_for(interaction.guild.id).get(name, []))
+        if not tracks:
+            return await interaction.followup.send(f"There is no playlist called **{name}**. See `/playlist list`.")
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.followup.send("Join a voice channel first!")
+        if self.state.is_active_in_other_guild(interaction.guild.id):
+            return await interaction.followup.send(
+                "This bot is already active in another server. Leave that server's voice channel first."
+            )
+        if shuffle:
+            random.shuffle(tracks)
+        guild_id = interaction.guild.id
+        session = self._session(guild_id)
+        if not session.voice_client or not session.voice_client.is_connected():
+            voice_client = await interaction.user.voice.channel.connect()
+            self.state.set_active(voice_client, interaction.user.voice.channel.id, interaction.channel.id, guild_id)
+        queue = self.state.queue_for(guild_id)
+        items = [
+            QueueItem(query=t["query"], title=t["title"], requested_by=interaction.user.id, song_data=t.get("song_data"))
+            for t in tracks
+        ]
+        is_playing = session.voice_client.is_playing() or session.voice_client.is_paused()
+        if is_playing:
+            queue.extend(items)
+            await interaction.followup.send(f"Added **{len(items)}** songs from **{name}** to the queue.")
+            return await self.refresh_controller(guild_id)
+        first, rest = items[0], items[1:]
+        queue.extend(rest)
+        await interaction.followup.send(f"Playing playlist **{name}** ({len(items)} songs).")
+        if first.song_data:
+            await self._play_song_data(first.song_data, interaction)
+        else:
+            await self._play_audio(first.query, interaction, title=first.title)
+
+    @playlist_group.command(name="list", description="Show this server's saved playlists")
+    async def playlist_list(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        lists = self.state.playlists_for(interaction.guild.id)
+        if not lists:
+            return await interaction.response.send_message(
+                "No saved playlists yet. Queue some songs and use `/playlist save`.", ephemeral=True
+            )
+        embed = discord.Embed(title="Saved playlists", color=discord.Color.blurple())
+        for n in sorted(lists):
+            titles = [t["title"] for t in lists[n][:3]]
+            more = f" and {len(lists[n]) - 3} more" if len(lists[n]) > 3 else ""
+            embed.add_field(name=f"{n} ({len(lists[n])} songs)", value=(", ".join(titles) + more)[:1024], inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @playlist_group.command(name="delete", description="Delete a saved playlist")
+    @discord.app_commands.describe(name="Playlist to delete")
+    async def playlist_delete(self, interaction: discord.Interaction, name: str):
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        if self.state.delete_playlist(interaction.guild.id, name):
+            return await interaction.response.send_message(f"Deleted playlist **{name}**.")
+        await interaction.response.send_message(f"There is no playlist called **{name}**.", ephemeral=True)
+
+    @playlist_load.autocomplete("name")
+    async def playlist_load_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._playlist_name_autocomplete(interaction, current)
+
+    @playlist_delete.autocomplete("name")
+    async def playlist_delete_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._playlist_name_autocomplete(interaction, current)
 
     @discord.app_commands.command(name="remove", description="Remove a song from the queue by its number in /queue")
     @discord.app_commands.describe(position="Number shown in /queue (1 = next song)")

@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
+## [2026-11-02] - Saved playlists and signed-in cookies
+
+### Added
+
+- `/playlist save`, `load`, `list` and `delete`: keep song lists for each
+  server and replay them later, with optional shuffle. Saved in
+  `playlists.json` on the server.
+- The cookie refresher imports a signed-in YouTube cookie export once
+  (`signin_cookies.txt`), deletes the file and then keeps those cookies fresh
+  automatically, so the bot and the resolver use signed-in cookies.
+
 ## [2026-11-02] - Bot no longer freezes
 
 ### Fixed

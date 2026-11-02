@@ -35,3 +35,6 @@ ytjs/.cache/
 cookies.txt*
 ytjs/.browser-profile/
 iptv_*.json
+playlists.json
+signin_cookies.txt*
+ytjs/signin_cookies.txt*

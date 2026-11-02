@@ -34,7 +34,8 @@ class HelpCog(commands.Cog):
                 "`/stop` stop the current track\n"
                 "`/go` disconnect from voice\n"
                 "`/diagnose` check common voice issues\n"
-                "`/queue` show the queue, `/remove <number>` drop a song from it"
+                "`/queue` show the queue, `/remove <number>` drop a song from it\n"
+                "`/playlist save/load/list/delete` keep song lists for this server"
             ),
             inline=False,
         )
