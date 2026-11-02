@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Deque, Optional
@@ -46,6 +47,23 @@ class GuildSession:
     # or EQ change can restart FFmpeg against the already-resolved stream
     # instead of re-running provider search and extraction.
     stream_cache: Optional[dict] = None
+    # Who asked for the current song (None for autoplay / mood radio).
+    current_requester: Optional[int] = None
+    # Vote skip: user IDs voting to skip the playback of skip_vote_generation.
+    skip_votes: set[int] = field(default_factory=set)
+    skip_vote_generation: int = 0
+    # Active /mood radio ("chill", "party", ...), refilled when the queue runs out.
+    mood: Optional[str] = None
+    # True while the current track counts towards /wrapped stats.
+    stats_counting: bool = False
+
+    def elapsed(self) -> float:
+        if not self.start_time:
+            return 0.0
+        paused = self.paused_duration
+        if self.last_paused_at:
+            paused += time.time() - self.last_paused_at
+        return max(0.0, time.time() - self.start_time - paused)
 
 
 class BotState:
@@ -67,6 +85,14 @@ class BotState:
         self.playlists_file = os.path.join(project_root, "playlists.json")
         self.playlists: dict[int, dict[str, list[dict]]] = {}
         self._load_playlists()
+        # Listening stats for /wrapped: {guild_id: {"all"|"YYYY-MM": bucket}}
+        self.stats_file = os.path.join(project_root, "stats.json")
+        self.stats: dict[int, dict[str, dict]] = {}
+        try:
+            with open(self.stats_file, "r", encoding="utf-8") as f:
+                self.stats = {int(gid): b for gid, b in json.load(f).items()}
+        except (OSError, ValueError):
+            self.stats = {}
 
     def is_active_in_other_guild(self, guild_id: int) -> bool:
         for session_guild_id, session in self.sessions.items():
@@ -109,6 +135,8 @@ class BotState:
         session.advance_queue_on_stop = True
         session.current_song_data = None
         session.stream_cache = None
+        session.mood = None
+        session.stats_counting = False
         session.history.clear()
         # Keep loop_modes, effects, and providers in memory so settings persist across sessions.
 
@@ -235,3 +263,36 @@ class BotState:
         del lists[name]
         self._save_playlists()
         return True
+
+    def _stat_buckets(self, guild_id: int) -> list[dict]:
+        guild = self.stats.setdefault(guild_id, {})
+        buckets = []
+        for key in ("all", time.strftime("%Y-%m")):
+            buckets.append(guild.setdefault(key, {"plays": 0, "seconds": 0.0, "songs": {}, "users": {}}))
+        return buckets
+
+    def record_play(self, guild_id: int, title: str, requester: Optional[int]) -> None:
+        for b in self._stat_buckets(guild_id):
+            b["plays"] += 1
+            b["songs"][title] = b["songs"].get(title, 0) + 1
+            if requester:
+                b["users"][str(requester)] = b["users"].get(str(requester), 0) + 1
+            if len(b["songs"]) > 2000:  # keep the file small: drop one-off plays
+                b["songs"] = dict(sorted(b["songs"].items(), key=lambda kv: -kv[1])[:1000])
+
+    def add_listen_seconds(self, guild_id: int, seconds: float) -> None:
+        if seconds > 0:
+            for b in self._stat_buckets(guild_id):
+                b["seconds"] += min(seconds, 4 * 3600)
+
+    def stats_snapshot(self) -> str:
+        return json.dumps({str(gid): b for gid, b in self.stats.items()})
+
+    def write_stats(self, payload: str) -> None:
+        try:
+            tmp = self.stats_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, self.stats_file)
+        except OSError:
+            pass

@@ -5,9 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
-## [2026-11-02] - Saved playlists and signed-in cookies
+## [2026-11-02] - Playlists, mood radio, Wrapped and signed-in cookies
 
 ### Added
+
+- `/wrapped`: this server's top songs, top listeners and hours of music, for
+  this month or all time. Stats are kept in `stats.json` on the server.
+- `/mood` (chill, party, romantic, workout, bhakti): endless music for a mood.
+  When the queue runs out it picks a new song that was not played recently.
+  `/mood Off` or `/stop` turns it off.
+- Vote skip: with 3 or more people listening, Next and `/skip` need a majority
+  vote, unless the skip comes from whoever requested the song or a server
+  manager.
+- The now-playing card shows album art, who requested the song and a progress
+  bar that updates every 15 seconds.
+
+### Fixed
+
+- Every track end ran a full garbage collection on the audio thread, which
+  could stall the bot between songs. It no longer does.
 
 - `/playlist save`, `load`, `list` and `delete`: keep song lists for each
   server and replay them later, with optional shuffle. Saved in

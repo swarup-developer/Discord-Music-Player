@@ -24,6 +24,8 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 - **Spotify links without an account.** Track, album and playlist links are matched and played through YouTube Music.
 - **Accurate JioSaavn results.** The original song comes first. Re-uploads are merged, and covers or lofi versions only appear when you ask for them.
 - **No manual cookies on a server.** YouTube traffic goes through Cloudflare WARP, and a background service keeps cookies fresh automatically.
+- **Live now-playing card.** The controller shows album art, who requested the song and a progress bar that moves as the song plays.
+- **Made for groups.** Mood radio, vote skip and a monthly server Wrapped with top songs and top listeners.
 - **Live TV and radio.** Thousands of public TV channels and radio stations. Offline TV channels are detected and hidden.
 - **Your own files.** Play audio files from your phone or computer. They are streamed from Discord and never stored on the server.
 - **Accessible controller.** Previous, -10s, pause, +10s, next, loop, shuffle, clear queue, volume and an equalizer menu, with plain-text labels that work with screen readers (NVDA, JAWS, Narrator, VoiceOver, TalkBack).
@@ -119,7 +121,9 @@ Type `/` in Discord to see all commands. Use `/join` first so the bot is in your
 | `/playlist save <name>` | Save the current song and the queue as a playlist for this server |
 | `/playlist load <name>` | Play a saved playlist, or add it to the queue if music is playing (optional shuffle) |
 | `/playlist list` / `/playlist delete <name>` | Show or delete saved playlists |
-| `/skip` | Skip to the next song |
+| `/mood <chill\|party\|romantic\|workout\|bhakti\|off>` | Endless music for a mood: it picks a new song whenever the queue runs out |
+| `/wrapped [this month\|all time]` | This server's top songs, top listeners and hours of music |
+| `/skip` | Skip to the next song. With 3 or more listeners, a skip needs a majority vote unless it comes from whoever requested the song or a server manager |
 | `/pause`, `/resume` | Pause or resume playback |
 | `/stop` | Stop playback and clear the queue |
 | `/volume <1-200>` | Set the volume |

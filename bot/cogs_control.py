@@ -44,6 +44,10 @@ class ControlCog(commands.Cog):
             return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         session = self.state.session_for(interaction.guild.id)
         if session.voice_client and session.voice_client.is_playing():
+            music_cog = interaction.client.get_cog("MusicCog")
+            vote = music_cog._skip_vote(interaction) if music_cog else None
+            if vote:
+                return await interaction.response.send_message(vote)
             session.advance_queue_on_stop = True
             # Skip always advances to the next queue item, even in repeat-one mode.
             session.skip_requested = True

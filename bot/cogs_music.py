@@ -292,6 +292,7 @@ class MusicCog(commands.Cog):
         # Load IPTV channels and keep probing their streams in the background,
         # so dead channels are hidden from /tv.
         asyncio.create_task(IPTVManager.health_loop())
+        asyncio.create_task(self._progress_loop())
 
         # Right-click a message -> Apps -> "Play audio files": plays the files
         # attached to it, streamed from Discord (nothing is stored on the server).
@@ -459,6 +460,9 @@ class MusicCog(commands.Cog):
             vc = session.voice_client
             if not vc or not vc.is_connected():
                 return await interaction.response.send_message("Nothing is connected.", ephemeral=True)
+            vote = self.cog._skip_vote(interaction)
+            if vote:
+                return await interaction.response.send_message(vote)
             await interaction.response.defer(ephemeral=True)
             session.advance_queue_on_stop = True
             # Next always advances to the next queue item, even in repeat-one mode.
@@ -622,20 +626,107 @@ class MusicCog(commands.Cog):
         
         title = session.current_song_title or "Nothing playing"
         status = "Playing" if session.is_playing else "Paused" if session.voice_client and session.voice_client.is_paused() else "Idle"
-        
-        description = (
-            f"**Playback Controller**\n\n"
-            f"• **Song:** {title}\n"
-            f"• **Status:** {status}\n"
-            f"• **Volume:** {int(volume * 100)}%\n"
-            f"• **Queue:** {len(queue)} queued\n"
-            f"• **Loop:** {loop_str}\n"
-            f"• **Shuffle:** {'On' if shuffle else 'Off'}\n"
-            f"• **Effects:** {effects_str}\n"
-            f"• **EQ Preset:** {eq_str}"
+        song = (session.current_song_data or {}).get("song") or {}
+
+        lines = [f"## {title}"]
+        if session.current_song_title:
+            duration = self._song_duration(song)
+            elapsed = session.elapsed()
+            if duration:
+                filled = min(15, int(15 * elapsed / duration))
+                lines.append(f"`{self._fmt_time(elapsed)}` {'▬' * filled}🔘{'▬' * (15 - filled)} `{self._fmt_time(duration)}`")
+            else:
+                lines.append(f"`{self._fmt_time(elapsed)}` elapsed")
+            if session.current_requester:
+                lines.append(f"Requested by <@{session.current_requester}>")
+            elif session.mood:
+                lines.append(f"From **{session.mood.capitalize()}** mood radio")
+        lines.append("")
+        lines.append(
+            f"**Status:** {status} • **Volume:** {int(volume * 100)}% • **Queue:** {len(queue)}\n"
+            f"**Loop:** {loop_str} • **Shuffle:** {'On' if shuffle else 'Off'}"
+            + (f" • **Mood:** {session.mood.capitalize()}" if session.mood else "") + "\n"
+            f"**Effects:** {effects_str} • **EQ:** {eq_str}"
         )
-        embed = discord.Embed(description=description, color=discord.Color.green())
+        if queue:
+            lines.append(f"**Up next:** {queue[0].title if queue[0].title != 'Unknown' else queue[0].query}")
+        embed = discord.Embed(description="\n".join(lines), color=discord.Color.green())
+        image = self._song_image(song)
+        if image:
+            embed.set_thumbnail(url=image)
+        embed.set_footer(text="Playback Controller")
         return embed
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        seconds = int(seconds)
+        if seconds >= 3600:
+            return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    @staticmethod
+    def _song_duration(song: dict) -> float:
+        try:
+            return float(song.get("duration") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _song_image(song: dict) -> Optional[str]:
+        image = song.get("image") or song.get("thumbnail")
+        if isinstance(image, list) and image:  # some APIs return [{"url": ...}, ...]
+            image = image[-1].get("url") if isinstance(image[-1], dict) else image[-1]
+        if isinstance(image, str) and image.startswith("http"):
+            return image.replace("150x150", "500x500")
+        vid = str(song.get("id") or "")
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
+            return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+        return None
+
+    async def _progress_loop(self) -> None:
+        """Keep the now-playing card's progress bar moving (edits, no re-post)."""
+        await self.bot.wait_until_ready()
+        while True:
+            await asyncio.sleep(15)
+            for guild_id, session in list(self.state.sessions.items()):
+                vc = session.voice_client
+                message_id = self.state.controller_message_id.get(guild_id)
+                if not (message_id and session.linked_text_channel_id and vc and vc.is_connected() and vc.is_playing()):
+                    continue
+                channel = self.bot.get_channel(session.linked_text_channel_id)
+                if channel is None:
+                    continue
+                try:
+                    await channel.get_partial_message(message_id).edit(embed=self._controller_embed(guild_id))
+                except Exception:
+                    pass
+
+    def _skip_vote(self, interaction: discord.Interaction) -> Optional[str]:
+        """Return None when the skip may go ahead, else a message about the vote.
+
+        With 3+ people listening, a skip needs a majority unless it comes from
+        whoever requested the song or someone who can manage the server.
+        """
+        session = self._session(interaction.guild.id)
+        vc = session.voice_client
+        listeners = [m for m in vc.channel.members if not m.bot] if vc and vc.channel else []
+        user = interaction.user
+        perms = getattr(user, "guild_permissions", None)
+        if (len(listeners) < 3 or user.id == session.current_requester
+                or (perms and (perms.manage_guild or perms.administrator))):
+            return None
+        if session.skip_vote_generation != session.playback_generation:
+            session.skip_votes = set()
+            session.skip_vote_generation = session.playback_generation
+        listener_ids = {m.id for m in listeners}
+        if user.id not in listener_ids:
+            return "Join the voice channel to vote."
+        session.skip_votes = (session.skip_votes & listener_ids) | {user.id}
+        needed = len(listeners) // 2 + 1
+        if len(session.skip_votes) >= needed:
+            session.skip_votes = set()
+            return None
+        return f"🗳️ {user.mention} voted to skip **{session.current_song_title}** ({len(session.skip_votes)}/{needed} votes)."
 
     async def refresh_controller(self, guild_id: int) -> None:
         guild = self.bot.get_guild(guild_id)
@@ -713,6 +804,10 @@ class MusicCog(commands.Cog):
 
             if error:
                 logger.error(f"Playback error: {error}")
+            if session.stats_counting:
+                self.state.add_listen_seconds(guild_id, session.elapsed())
+                session.stats_counting = False
+                self.bot.loop.call_soon_threadsafe(self._save_stats_soon)
             session.is_playing = False
             session.current_song_title = None
             session.start_time = 0.0
@@ -738,18 +833,14 @@ class MusicCog(commands.Cog):
                 asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
             session.advance_queue_on_stop = True
             asyncio.run_coroutine_threadsafe(self.refresh_controller(guild_id), self.bot.loop)
-
-            # Instant memory reclamation
-            import gc
-            import ctypes
-            gc.collect()
-            try:
-                libc = ctypes.CDLL("libc.so.6")
-                libc.malloc_trim(0)
-            except Exception:
-                pass
+            # No forced gc.collect() here: on the audio thread it held the GIL
+            # and stalled the event loop at the end of every track.
 
         return after_playback
+
+    def _save_stats_soon(self) -> None:
+        payload = self.state.stats_snapshot()
+        asyncio.create_task(asyncio.to_thread(self.state.write_stats, payload))
 
     async def _start_playback(
         self,
@@ -793,6 +884,16 @@ class MusicCog(commands.Cog):
             }
         else:
             session.stream_cache = None
+
+        if seek_start is None:
+            # A new track (not a seek/EQ restart of the same one): close the
+            # previous track's listening time and count this play for /wrapped.
+            if session.stats_counting:
+                self.state.add_listen_seconds(guild_id, session.elapsed())
+            session.stats_counting = not title.startswith(("📺", "📻"))
+            if session.stats_counting:
+                self.state.record_play(guild_id, title, session.current_requester)
+            self._save_stats_soon()
 
         session.temp_file_path = temp_file_path
         session.start_time = (time.time() - seek_start) if seek_start is not None else time.time()
@@ -1015,6 +1116,8 @@ class MusicCog(commands.Cog):
             )
 
         guild_id = interaction.guild.id
+        if getattr(interaction, "user", None):
+            session.current_requester = interaction.user.id
         session.current_song_data = {"type": "query", "query": query, "title": title}
         started = await self._start_playback(guild_id, audio_source, title, session.current_song_data)
         if not started:
@@ -1054,6 +1157,8 @@ class MusicCog(commands.Cog):
             )
 
         guild_id = interaction.guild.id
+        if getattr(interaction, "user", None):
+            session.current_requester = interaction.user.id
         session.current_song_data = {"type": "song", "song": song, "title": title}
         started = await self._start_playback(guild_id, audio_source, title, session.current_song_data)
         if not started:
@@ -1096,6 +1201,11 @@ class MusicCog(commands.Cog):
                 next_item = QueueItem(query=last_song_data["query"], title=last_song_data["title"])
             else:
                 next_item = QueueItem(query=last_song_data["song"].get("id"), title=last_song_data["title"], song_data=last_song_data["song"])
+        elif not queue and session.mood:
+            pick = await self._mood_pick(guild_id, session.mood)
+            if not pick:
+                return
+            next_item = QueueItem(query=pick.get("id"), title=pick.get("song") or pick.get("title"), song_data=pick)
         elif not queue:
             if not (skip_requested and last_song_data):
                 return
@@ -1135,6 +1245,8 @@ class MusicCog(commands.Cog):
             async def send(self, content=None, **kwargs):
                 return await self.target_channel.send(content=content, **kwargs)
 
+        if not (loop_mode == "song" and last_song_data):
+            session.current_requester = next_item.requested_by
         proxy = type("ProxyInteraction", (), {})()
         proxy.guild = guild
         proxy.followup = _FollowupProxy(channel)
@@ -1613,9 +1725,10 @@ class MusicCog(commands.Cog):
         guild_id = interaction.guild.id
         session = self._session(guild_id)
         
-        # Clear queue
+        # Clear queue and the mood radio that would refill it
         self.state.clear_queue(guild_id)
-        
+        session.mood = None
+
         # Stop playback
         if session.voice_client:
             session.advance_queue_on_stop = False
@@ -2183,6 +2296,115 @@ class MusicCog(commands.Cog):
 
     async def cog_unload(self):
         self.bot.tree.remove_command(self.play_files_menu.name, type=self.play_files_menu.type)
+
+    MOOD_QUERIES = {
+        "chill": ["lofi hindi chill songs", "chill acoustic hindi songs", "arijit singh soft songs", "lofi bollywood"],
+        "party": ["bollywood party songs", "punjabi party hits", "bollywood dance hits", "edm party songs"],
+        "romantic": ["romantic hindi songs", "bollywood love songs", "arijit singh romantic songs", "90s romantic hindi songs"],
+        "workout": ["workout motivation songs", "punjabi gym songs", "high energy workout songs", "hip hop workout songs"],
+        "bhakti": ["bhajan", "krishna bhajan", "shiv bhajan", "hanuman bhajan", "ram bhajan"],
+    }
+
+    async def _mood_pick(self, guild_id: int, mood: str) -> Optional[dict]:
+        """A random song for the mood that was not played recently."""
+        session = self._session(guild_id)
+        recent = {h.get("title") for h in session.history}
+        if session.current_song_title:
+            recent.add(session.current_song_title)
+        provider = self.state.get_provider(guild_id)
+        for _ in range(3):
+            try:
+                results = await search_songs(random.choice(self.MOOD_QUERIES[mood]), provider, limit=15)
+            except Exception:
+                results = []
+            fresh = [r for r in results or [] if (r.get("song") or r.get("title")) not in recent]
+            if fresh:
+                return random.choice(fresh)
+        return None
+
+    @discord.app_commands.command(name="mood", description="Endless music for a mood; picks the next song when the queue runs out")
+    @discord.app_commands.describe(mood="Mood to play, or Off to stop the mood radio")
+    @discord.app_commands.choices(mood=[
+        discord.app_commands.Choice(name="Chill", value="chill"),
+        discord.app_commands.Choice(name="Party", value="party"),
+        discord.app_commands.Choice(name="Romantic", value="romantic"),
+        discord.app_commands.Choice(name="Workout", value="workout"),
+        discord.app_commands.Choice(name="Bhakti", value="bhakti"),
+        discord.app_commands.Choice(name="Off", value="off"),
+    ])
+    async def mood_cmd(self, interaction: discord.Interaction, mood: str):
+        await self._ensure_deferred(interaction)
+        if not interaction.guild:
+            return await interaction.followup.send("This only works in a server.")
+        guild_id = interaction.guild.id
+        session = self._session(guild_id)
+        if mood == "off":
+            session.mood = None
+            await self.refresh_controller(guild_id)
+            return await interaction.followup.send("Mood radio is off. The current song and queue keep playing.")
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.followup.send("Join a voice channel first!")
+        if self.state.is_active_in_other_guild(guild_id):
+            return await interaction.followup.send(
+                "This bot is already active in another server. Leave that server's voice channel first."
+            )
+        if not session.voice_client or not session.voice_client.is_connected():
+            voice_client = await interaction.user.voice.channel.connect()
+            self.state.set_active(voice_client, interaction.user.voice.channel.id, interaction.channel.id, guild_id)
+        session.mood = mood
+        vc = session.voice_client
+        if vc.is_playing() or vc.is_paused():
+            await self.refresh_controller(guild_id)
+            return await interaction.followup.send(
+                f"🎧 **{mood.capitalize()}** mood radio is on. It takes over when the queue runs out."
+            )
+        pick = await self._mood_pick(guild_id, mood)
+        if not pick:
+            session.mood = None
+            return await interaction.followup.send("Couldn't find songs for that mood right now. Try again in a moment.")
+        await interaction.followup.send(f"🎧 Starting **{mood.capitalize()}** mood radio. Use `/mood Off` to stop it.")
+        await self._play_song_data(pick, interaction)
+        session.current_requester = None  # the mood radio picked it
+
+    @discord.app_commands.command(name="wrapped", description="This server's listening stats: top songs, top listeners, hours played")
+    @discord.app_commands.describe(period="This month or all time")
+    @discord.app_commands.choices(period=[
+        discord.app_commands.Choice(name="This month", value="month"),
+        discord.app_commands.Choice(name="All time", value="all"),
+    ])
+    async def wrapped_cmd(self, interaction: discord.Interaction, period: str = "month"):
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works in a server.", ephemeral=True)
+        key = time.strftime("%Y-%m") if period == "month" else "all"
+        bucket = self.state.stats.get(interaction.guild.id, {}).get(key)
+        if not bucket or not bucket["plays"]:
+            return await interaction.response.send_message(
+                "No listening stats yet. Play some music and check back!", ephemeral=True
+            )
+        label = time.strftime("%B %Y") if period == "month" else "All time"
+        hours = bucket["seconds"] / 3600
+        embed = discord.Embed(
+            title=f"🎁 {interaction.guild.name} Wrapped: {label}",
+            description=f"**{bucket['plays']}** songs played • **{hours:.1f}** hours of music",
+            color=discord.Color.magenta(),
+        )
+        medals = ["🥇", "🥈", "🥉", "4.", "5."]
+        top_songs = sorted(bucket["songs"].items(), key=lambda kv: -kv[1])[:5]
+        embed.add_field(
+            name="Top songs",
+            value="\n".join(f"{medals[i]} {t[:80]} ({n} plays)" for i, (t, n) in enumerate(top_songs)),
+            inline=False,
+        )
+        top_users = sorted(bucket["users"].items(), key=lambda kv: -kv[1])[:3]
+        if top_users:
+            embed.add_field(
+                name="Top DJs",
+                value="\n".join(f"{medals[i]} <@{u}> ({n} songs)" for i, (u, n) in enumerate(top_users)),
+                inline=False,
+            )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        await interaction.response.send_message(embed=embed)
 
     playlist_group = discord.app_commands.Group(name="playlist", description="Save and replay song lists for this server")
 
