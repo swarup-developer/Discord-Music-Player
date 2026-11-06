@@ -178,9 +178,8 @@ class BotState:
 
     def get_provider(self, guild_id: int) -> str:
         provider = self.providers.get(guild_id, "jiosaavn")
-        # The plain YouTube provider was replaced by YouTube Music, and the old
-        # "Spotify" provider (which searched YouTube) by real /spotify playback.
-        return "ytmusic" if provider in ("youtube", "spotify") else provider
+        # The plain YouTube provider was replaced by YouTube Music.
+        return "ytmusic" if provider == "youtube" else provider
 
     def set_provider(self, guild_id: int, provider: str) -> None:
         self.providers[guild_id] = provider

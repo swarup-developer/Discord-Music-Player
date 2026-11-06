@@ -85,6 +85,7 @@ class PremiumRequired(SpotifyError):
 def find_librespot() -> Optional[str]:
     for candidate in (
         os.getenv("GO_LIBRESPOT_BIN", ""),
+        str(ROOT.parent / "go-librespot" / "go-librespot"),
         str(Path.home() / "go-librespot" / "go-librespot"),
         shutil.which("go-librespot") or "",
     ):
@@ -213,14 +214,14 @@ class SpotifyAuth:
     async def finish_login(self, user_id: int, pasted: str) -> dict:
         pending = self._pending.get(user_id)
         if not pending or time.time() - pending["t"] > 900:
-            raise SpotifyError("The login link expired. Run `/spotify setup` again.")
+            raise SpotifyError("The login link expired. Run `/spotify login` again.")
         text = pasted.strip()
         query = parse_qs(urlparse(text).query) if "?" in text else {}
         if query.get("error"):
             raise SpotifyError(f"Spotify login was cancelled ({query['error'][0]}).")
         code = (query.get("code") or [text])[0]
         if query.get("state") and query["state"][0] != pending["state"]:
-            raise SpotifyError("That address belongs to a different login attempt. Run `/spotify setup` again.")
+            raise SpotifyError("That address belongs to a different login attempt. Run `/spotify login` again.")
         if not code or " " in code or len(code) < 20:
             raise SpotifyError("That doesn't look like the address Spotify sent you to. Copy the whole address bar.")
 
@@ -259,7 +260,7 @@ class SpotifyAuth:
             return cached[0]
         data = self.store.get(user_id)
         if not data:
-            raise SpotifyError("You haven't connected Spotify yet. Run `/spotify setup` first.")
+            raise SpotifyError("You haven't connected Spotify yet. Run `/spotify login` first.")
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.post(TOKEN_URL, data={
                 "grant_type": "refresh_token",
@@ -268,7 +269,7 @@ class SpotifyAuth:
             })
         if r.status_code != 200:
             if r.status_code == 400 and "invalid_grant" in r.text:
-                raise SpotifyError("Your Spotify login has expired or was removed. Run `/spotify setup` again.")
+                raise SpotifyError("Your Spotify login has expired or was removed. Run `/spotify login` again.")
             raise SpotifyError(_token_error(r))
         tok = r.json()
         if tok.get("refresh_token") and tok["refresh_token"] != data["refresh_token"]:
@@ -280,6 +281,7 @@ class SpotifyAuth:
     def forget(self, user_id: int) -> bool:
         self._tokens.pop(user_id, None)
         self._pending.pop(user_id, None)
+        shutil.rmtree(SESSIONS_DIR / str(user_id), ignore_errors=True)
         return self.store.delete(user_id)
 
     async def api_get(self, user_id: int, path: str, params: Optional[dict] = None) -> dict:
@@ -329,7 +331,7 @@ def _token_error(r: httpx.Response) -> str:
     if "redirect" in desc.lower():
         return f"Your Spotify app's Redirect URI must be exactly {REDIRECT_URI}"
     if err == "invalid_grant":
-        return "That login code was already used or expired. Run `/spotify setup` again."
+        return "That login code was already used or expired. Run `/spotify login` again."
     return f"Spotify login failed ({err or r.status_code}{': ' + desc if desc else ''})."
 
 
@@ -354,7 +356,7 @@ class LibrespotSession:
         self._log_tail: list[str] = []
         self.on_event = None  # callback(session, type, data)
 
-    def _write_config(self, username: str, token: str):
+    def _write_config(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             os.chmod(self.dir, 0o700)
@@ -372,10 +374,11 @@ class LibrespotSession:
             "zeroconf_enabled": False,
             "log_level": "info",
             "cache": {"enabled": False},
-            "credentials": {
-                "type": "spotify_token",
-                "spotify_token": {"username": username, "access_token": token},
-            },
+            # Spotify only streams audio to clients logged in through its own
+            # login; tokens from a user's developer app fail with
+            # INVALID_CREDENTIALS. Device pairing (spotify.com/pair) is done
+            # once; go-librespot then keeps the login in state.json here.
+            "credentials": {"type": "device_auth"},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self.port},
         }
         # JSON is valid YAML, so no YAML library is needed.
@@ -384,25 +387,49 @@ class LibrespotSession:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)
 
-    async def start(self, binary: str, username: str, token: str):
-        self._write_config(username, token)
+    @property
+    def paired(self) -> bool:
+        try:
+            state = json.loads((self.dir / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        creds = state.get("credentials") or {}
+        return bool(creds.get("username") and creds.get("data"))
+
+    async def start(self, binary: str, pairing: bool = False, on_pair_url=None, ready_timeout: float = 30):
+        """Start the player. With pairing=True, report the spotify.com/pair
+        link through on_pair_url and wait (up to ready_timeout) for approval."""
+        self._write_config()
         if self.fifo.exists():
             self.fifo.unlink()
         os.mkfifo(self.fifo, 0o600)
+        # Supervisor starts the bot without HOME, and go-librespot refuses to
+        # run without HOME or XDG_CONFIG_HOME, so point both at this session.
+        env = {**os.environ, "HOME": str(self.dir), "XDG_CONFIG_HOME": str(self.dir)}
         self.proc = await asyncio.create_subprocess_exec(
-            binary, "-config_dir", str(self.dir),
+            binary, "--config_dir", str(self.dir),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=True, env=env,
         )
         self._log_task = asyncio.create_task(self._read_logs())
-        deadline = time.time() + 25
+        deadline = time.time() + ready_timeout
+        reported = False
         async with httpx.AsyncClient(timeout=3) as client:
             while time.time() < deadline:
                 if self.proc.returncode is not None:
                     break
-                with contextlib.suppress(httpx.HTTPError):
+                pair = next((m.group(1) for line in self._log_tail
+                             if (m := re.search(r"visit (https://\S*spotify\.com/pair\S*)", line))), None)
+                if pair:
+                    if not pairing:
+                        break  # no saved login: needs /spotify login
+                    if not reported and on_pair_url:
+                        reported = True
+                        with contextlib.suppress(Exception):
+                            await on_pair_url(pair)
+                with contextlib.suppress(httpx.HTTPError, ValueError):
                     r = await client.get(self.base + "/")
-                    if r.status_code == 200:
+                    if r.status_code == 200 and r.json().get("playback_ready"):
                         self._events_task = asyncio.create_task(self._read_events())
                         return
                 await asyncio.sleep(0.5)
@@ -410,8 +437,16 @@ class LibrespotSession:
         await self.stop()
         if "premium" in tail:
             raise PremiumRequired()
+        if "spotify.com/pair" in tail and not pairing:
+            raise SpotifyError("The Spotify player isn't linked to your account yet. Run `/spotify login` to link it.")
+        if "invalid_credentials" in tail or "bad credentials" in tail:
+            with contextlib.suppress(OSError):
+                (self.dir / "state.json").unlink()
+            raise SpotifyError("Spotify rejected the player's saved login. Run `/spotify login` to link it again.")
+        if pairing and "spotify.com/pair" in tail:
+            raise SpotifyError("The link wasn't approved in time. Run `/spotify login` to get a new link.")
         logger.error("go-librespot failed to start. Last output:\n%s", "\n".join(self._log_tail[-15:]))
-        raise SpotifyError("The Spotify player could not start. Try `/spotify setup` again, then retry.")
+        raise SpotifyError("The Spotify player could not start. Try again, or log in again with `/spotify login`.")
 
     async def _read_logs(self):
         assert self.proc and self.proc.stdout
@@ -494,6 +529,7 @@ class SessionManager:
     def __init__(self, auth: SpotifyAuth):
         self.auth = auth
         self.by_guild: dict[int, LibrespotSession] = {}
+        self._pairing_ports: set[int] = set()
         self._lock = asyncio.Lock()
 
     def get(self, guild_id: int) -> Optional[LibrespotSession]:
@@ -522,17 +558,37 @@ class SessionManager:
             binary = find_librespot()
             if not binary:
                 raise SpotifyError("Spotify playback isn't installed on this bot's server yet.")
-            data = self.auth.store.get(user_id)
-            if not data:
-                raise SpotifyError("You haven't connected Spotify yet. Run `/spotify setup` first.")
-            token = await self.auth.access_token(user_id)
-            used = {s.port for s in self.by_guild.values()}
-            port = next(p for p in range(BASE_PORT, BASE_PORT + 50) if p not in used)
-            session = LibrespotSession(user_id, guild_id, port)
-            await session.start(binary, data["username"], token)
+            if not self.auth.store.get(user_id):
+                raise SpotifyError("You haven't connected Spotify yet. Run `/spotify login` first.")
+            session = LibrespotSession(user_id, guild_id, self._free_port())
+            await session.start(binary)
             self.by_guild[guild_id] = session
             logger.info("Started Spotify player for guild %s on port %s", guild_id, port)
             return session
+
+    def _free_port(self) -> int:
+        used = {s.port for s in self.by_guild.values()} | self._pairing_ports
+        return next(p for p in range(BASE_PORT, BASE_PORT + 50) if p not in used)
+
+    def is_paired(self, user_id: int) -> bool:
+        return LibrespotSession(user_id, 0, 0).paired
+
+    async def pair(self, user_id: int, on_pair_url) -> None:
+        """Link the player to the user's account once via spotify.com/pair."""
+        binary = find_librespot()
+        if not binary:
+            raise SpotifyError("Spotify playback isn't installed on this bot's server yet.")
+        await self.stop_user(user_id)
+        port = self._free_port()
+        self._pairing_ports.add(port)
+        session = LibrespotSession(user_id, 0, port)
+        try:
+            await session.start(binary, pairing=True, on_pair_url=on_pair_url, ready_timeout=600)
+        finally:
+            self._pairing_ports.discard(port)
+            await session.stop()
+        if not session.paired:
+            raise SpotifyError("Linking didn't finish. Run `/spotify login` to try again.")
 
     async def stop(self, guild_id: int):
         async with self._lock:

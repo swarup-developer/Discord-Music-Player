@@ -9,20 +9,20 @@ Releases are named by date.
 
 ### Added
 
-- `/spotify`: play songs, albums and playlists straight from Spotify with
-  your own Spotify Premium account. No YouTube involved. Commands: `setup`,
-  `play`, `queue`, `pause`, `resume`, `skip`, `previous`, `now`, `volume`,
-  `stop`, `logout`.
-- `/spotify setup` walks you through creating your own Spotify app and
-  logging in once. Logins are stored encrypted and removed with
-  `/spotify logout`.
+- Spotify playback with your own Spotify Premium account. Log in once with
+  `/spotify login`, choose **Spotify** in `/provider`, and `/play` searches
+  and plays straight from Spotify (no YouTube involved). Track, album and
+  playlist links work, and the usual pause, skip, previous, seek, stop and
+  volume controls work with it.
+- `/spotify login` walks you through creating your own Spotify app and
+  logging in. Logins are stored encrypted and removed with `/spotify logout`.
 - The bot shows up as "Discord Music Bot" in your Spotify devices, so you can
   also pause or skip from the Spotify app.
 
 ### Changed
 
-- Spotify links in `/play` now point to `/spotify play`, and Spotify is no
-  longer a `/provider` option (it used to look songs up on YouTube).
+- The Spotify provider no longer looks songs up on YouTube; it plays from
+  Spotify itself and needs `/spotify login` first.
 
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 

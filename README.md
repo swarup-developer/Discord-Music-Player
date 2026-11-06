@@ -23,7 +23,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 
 - **Fast playback.** A local YouTube resolver keeps one session open, so a song usually starts within 1 to 3 seconds.
 - **YouTube Music search.** Searches return official songs rather than music videos.
-- **Real Spotify playback.** Users with Spotify Premium connect their own account and play songs, albums and playlists straight from Spotify with `/spotify`. No YouTube involved.
+- **Real Spotify playback.** Users with Spotify Premium log in once, pick Spotify in `/provider`, and `/play` searches and plays straight from Spotify. No YouTube involved.
 - **Accurate JioSaavn results.** The original song comes first. Re-uploads are merged, and covers or lofi versions only appear when you ask for them.
 - **No manual cookies on a server.** YouTube traffic goes through Cloudflare WARP, and a background service keeps cookies fresh automatically.
 - **Live now-playing card.** The controller shows album art, who requested the song and a progress bar that moves as the song plays.
@@ -131,7 +131,7 @@ Type `/` in Discord to see all commands. Use `/join` first so the bot is in your
 | `/play <song>` | Play a song by name or link, or add it to the queue |
 | `/search <query>` | Search on the current provider and pick a result |
 | `/url <link>` | Play a YouTube link or a direct audio stream |
-| `/provider` | Choose the default source: YouTube Music, JioSaavn, SoundCloud or Local Files |
+| `/provider` | Choose the default source: YouTube Music, JioSaavn, SoundCloud, Spotify (after `/spotify login`) or Local Files |
 | `/lyrics [song]` | Show lyrics for the current or a given song |
 
 ### Playback and queue
@@ -178,9 +178,9 @@ Uploaded files are streamed from Discord and are never stored on the server. To 
 
 ## Spotify (Premium)
 
-`/spotify` plays music straight from Spotify, using the listener's own Spotify
+The bot can play straight from Spotify, using the listener's own Spotify
 Premium account. Nothing goes through YouTube. Free Spotify accounts can't use
-it (Spotify requires Premium for this); everyone can still use `/play`.
+it (Spotify requires Premium for this); YouTube Music stays the default.
 
 **One-time setup for each user (about 3 minutes):**
 
@@ -189,14 +189,18 @@ it (Spotify requires Premium for this); everyone can still use `/play`.
 3. Add the Redirect URI `http://127.0.0.1:8888/callback` exactly.
 4. Tick **Web API**, accept the terms and save.
 5. Open **Settings** and copy the **Client ID**. No Client Secret is needed.
-6. In Discord run `/spotify setup`, press **Enter Client ID** and paste it.
+6. In Discord run `/spotify login`, press **Enter Client ID** and paste it.
 7. Press **Log in with Spotify** and agree. The browser then shows a page that
    "can't be reached"; that's expected. Copy the whole address from the
    address bar, press **Paste the address** and paste it.
 
-**Commands:** `/spotify play <song or link>`, `/spotify queue`, `pause`,
-`resume`, `skip`, `previous`, `now`, `volume`, `stop`, `logout`. Use `/join`
-first. Links to Spotify tracks, albums and playlists work.
+**Playing:** choose **Spotify** in `/provider`, then use `/play` as usual: it
+searches Spotify, and Spotify track, album and playlist links work too. The
+normal pause, resume, skip, previous, ±10s, stop and volume commands and
+buttons control Spotify while it plays. While one person's Spotify is playing,
+others in the channel can `/play` to add songs to it. `/spotify logout`
+removes your login. With any other provider selected, the bot plays from
+YouTube Music and the others as before.
 
 **How it works:** the bot starts [go-librespot](https://github.com/devgianlu/go-librespot),
 an open-source Spotify Connect player, logged in as the user who started
