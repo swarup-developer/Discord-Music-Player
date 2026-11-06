@@ -37,16 +37,32 @@ os.environ.setdefault("PULSE_SERVER", PULSE_SERVER)
 
 NEED_KEY = (
     "**Connect Spotify (Premium)**\n"
-    "Run `/spotify login` again and paste your Spotify key in the **key** box.\n"
-    "No key yet? Press **Get your key**, log in with Spotify Premium, create a key and copy it "
-    "(it starts with `spak_`). You only paste it once."
+    "Press **Paste key** and paste your Spotify key (it starts with `spak_`). You only do this once.\n"
+    "No key yet? Press **Get your key**, log in with Spotify Premium, create a key and copy it."
 )
 
 
-class KeyView(discord.ui.View):
-    def __init__(self):
+class KeyModal(discord.ui.Modal, title="Paste your Spotify key"):
+    key = discord.ui.TextInput(label="Spotify key (starts with spak_)", min_length=20, max_length=200,
+                               placeholder="spak_...")
+
+    def __init__(self, cog: "SpotifyCog"):
         super().__init__(timeout=900)
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.start_pairing(interaction, self.key.value.strip())
+
+
+class KeyView(discord.ui.View):
+    def __init__(self, cog: "SpotifyCog"):
+        super().__init__(timeout=900)
+        self.cog = cog
         self.add_item(discord.ui.Button(label="Get your key", url=KEY_PAGE))
+
+    @discord.ui.button(label="Paste key", style=discord.ButtonStyle.primary)
+    async def paste(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(KeyModal(self.cog))
 
 
 class SpotifyCog(commands.Cog):
@@ -255,8 +271,7 @@ class SpotifyCog(commands.Cog):
     # ----------------------------------------------------------- commands ---
 
     @spotify.command(name="login", description="Connect your Spotify Premium account (one time)")
-    @app_commands.describe(key="Your Spotify key (starts with spak_). Only needed the first time.")
-    async def login_cmd(self, interaction: discord.Interaction, key: Optional[str] = None):
+    async def login_cmd(self, interaction: discord.Interaction):
         if not find_soloist():
             return await interaction.response.send_message(
                 "Spotify playback isn't installed on this bot's server yet. Ask the bot owner.", ephemeral=True
@@ -267,20 +282,33 @@ class SpotifyCog(commands.Cog):
                 "To use a different account, run `/spotify logout` first.",
                 ephemeral=True,
             )
-        key = (key or "").strip() or (self.players.store.get(interaction.user.id) or {}).get("pending_key", "")
+        key = (self.store.get(interaction.user.id) or {}).get("pending_key", "")
+        if valid_key(key):
+            return await self.start_pairing(interaction, key)
+        await interaction.response.send_message(NEED_KEY, view=KeyView(self), ephemeral=True)
+
+    def _forget_pending(self, user_id: int):
+        data = self.store.get(user_id) or {}
+        if data.pop("pending_key", None) is not None:
+            self.store.put(user_id, data)
+
+    async def start_pairing(self, interaction: discord.Interaction, key: str):
         if not valid_key(key):
-            return await interaction.response.send_message(NEED_KEY, view=KeyView(), ephemeral=True)
-        data = self.players.store.get(interaction.user.id) or {}
+            return await interaction.response.send_message(
+                "That doesn't look like a Spotify key. It starts with `spak_`. Copy it again.",
+                view=KeyView(self), ephemeral=True,
+            )
+        data = self.store.get(interaction.user.id) or {}
         data["pending_key"] = key
-        self.players.store.put(interaction.user.id, data)
+        self.store.put(interaction.user.id, data)
         await interaction.response.send_message("Getting a pairing code from Spotify, one moment.", ephemeral=True)
 
         async def on_code(url: str, user_code: str):
             view = discord.ui.View(timeout=900)
             view.add_item(discord.ui.Button(label="Open Spotify pairing", url=url))
             await interaction.followup.send(
-                f"Press **Open Spotify pairing** (works on your phone or PC), log in with your "
-                f"Spotify Premium account and press **Agree**. Your code is **{user_code}** if Spotify asks.\n"
+                f"Press **Open Spotify pairing** (phone or PC), log in with your Spotify Premium account "
+                f"and press **Agree**. Your code is **{user_code}** if Spotify asks.\n"
                 "I'll finish by myself and tell you here.",
                 view=view, ephemeral=True,
             )
@@ -288,6 +316,8 @@ class SpotifyCog(commands.Cog):
         try:
             await self.players.login_with_code(interaction.user.id, key, on_code)
         except SpotifyError as e:
+            if "key" in str(e).lower():
+                self._forget_pending(interaction.user.id)
             return await interaction.followup.send(str(e), ephemeral=True)
         except Exception:
             logger.exception("Spotify pairing-code login failed")
