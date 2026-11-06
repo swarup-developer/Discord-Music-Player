@@ -99,7 +99,7 @@ class Server:
             if not key.is_absolute():
                 key = HERE / key
             kwargs["key_filename"] = str(key)
-        print(f"Connecting to {cfg['host']}...")
+        print(f"Connecting to {cfg['host']}.")
         self.client.connect(**kwargs)
 
     def sudo_script(self, script: str, timeout: int = 120) -> str:
@@ -139,22 +139,22 @@ bot_pids() {{
 show_procs() {{
   local pids; pids=$(bot_pids | tr '\\n' ',' | sed 's/,$//')
   if [ -n "$pids" ]; then
-    ps -o pid=,rss=,args= -p "$pids" | awk '{{printf "  %-7s %6.1f MB  ", $1, $2/1024; $1=$2=""; print substr($0,3,90)}}'
+    ps -o rss=,args= -p "$pids" | awk '{{mb=$1/1024; $1=""; n=$0; if (n ~ /dc\.py/) n="Discord bot"; else if (n ~ /server\.mjs/) n="YouTube resolver"; else if (n ~ /cookie_refresher/) n="Cookie refresher"; else if (n ~ /bgutil/) n="PO token server"; else if (n ~ /ffmpeg/) n="FFmpeg stream"; else if (n ~ /chrom|headless/) n="Chromium"; printf "  %s, %d MB\\n", n, mb}}'
   else
-    echo "  (none)"
+    echo "  none"
   fi
 }}
-mem() {{ free -m | awk '/Mem:/{{printf "Server RAM: %d MB used, %d MB available of %d MB\\n", $3, $7, $2}}'; }}
+mem() {{ free -m | awk '/Mem:/{{printf "Server memory: %d MB used, %d MB free, out of %d MB\\n", $3, $7, $2}}'; }}
 '''
 
 
 def script_status(cfg: dict) -> str:
     return _header(cfg) + '''
-echo "== Services"
-supervisorctl status 2>/dev/null | grep -E "dcbot|bgutil" | sed 's/^/  /' || echo "  supervisor not found"
-printf "  cookie timer: %s\\n" "$(systemctl is-active dcbot-cookies.timer 2>/dev/null)"
-command -v warp-cli >/dev/null && printf "  WARP: %s\\n" "$(warp-cli --accept-tos status 2>/dev/null | head -1)"
-echo "== Bot processes"
+echo "Services:"
+supervisorctl status 2>/dev/null | grep -E "dcbot|bgutil" | awk '{n=$1; if(n=="dcbot")n="Discord bot"; else if(n=="dcbot-ytjs")n="YouTube resolver"; else if(n=="bgutil-pot")n="PO token server"; printf "  %s: %s\\n", n, tolower($2)}' || echo "  supervisor not found"
+printf "  Cookie timer: %s\\n" "$(systemctl is-active dcbot-cookies.timer 2>/dev/null)"
+command -v warp-cli >/dev/null && printf "  WARP: %s\\n" "$(warp-cli --accept-tos status 2>/dev/null | head -1 | sed 's/^Status update: //' | tr 'A-Z' 'a-z')"
+echo "Bot processes:"
 show_procs
 mem
 '''
@@ -162,7 +162,7 @@ mem
 
 def script_stop(cfg: dict) -> str:
     return _header(cfg) + '''
-echo "Stopping the bot stack..."
+echo "Stopping the bot and everything it uses."
 supervisorctl stop dcbot dcbot-ytjs bgutil-pot >/dev/null 2>&1 || true
 systemctl stop dcbot-cookies.timer dcbot-cookies.service >/dev/null 2>&1 || true
 # Older installs ran the cookie refresher as a long-running service.
@@ -171,7 +171,7 @@ systemctl stop dcbot-cookies >/dev/null 2>&1 || true
 # Anything still alive (orphaned FFmpeg, Chromium, a bot started by hand...)
 left=$(bot_pids)
 if [ -n "$left" ]; then
-  echo "Ending leftover bot processes: $(echo $left | tr '\\n' ' ')"
+  echo "Ending leftover bot processes."
   kill $left 2>/dev/null || true
   sleep 3
   left=$(bot_pids)
@@ -184,7 +184,7 @@ if [ "$STOP_WARP" = "1" ] && systemctl list-unit-files warp-svc.service >/dev/nu
   echo "Cloudflare WARP stopped."
 fi
 sleep 1
-echo "== Bot processes still running"
+echo "Bot processes still running:"
 show_procs
 [ -z "$(bot_pids)" ] && echo "All clear: no bot, Node.js, Chromium or FFmpeg process of the bot is running."
 mem
@@ -193,7 +193,7 @@ mem
 
 def script_start(cfg: dict) -> str:
     return _header(cfg) + '''
-echo "Starting the bot stack..."
+echo "Starting the bot."
 if systemctl list-unit-files warp-svc.service >/dev/null 2>&1; then
   systemctl start warp-svc >/dev/null 2>&1 || true
   sleep 2
@@ -203,13 +203,14 @@ supervisorctl start dcbot-ytjs >/dev/null 2>&1 || true
 sleep 2
 supervisorctl start dcbot >/dev/null 2>&1 || true
 systemctl start dcbot-cookies.timer >/dev/null 2>&1 || true
-echo "Waiting for the bot to log in..."
+echo "Waiting for the bot to come online."
 for i in $(seq 1 20); do
   sleep 2
   tail -n 5 "$BOT_DIR/music_bot.log" 2>/dev/null | grep -q "logged in as" && break
 done
-tail -n 30 "$BOT_DIR/music_bot.log" 2>/dev/null | grep "logged in as" | tail -1 | sed 's/^/  /'
-echo "== Bot processes"
+name=$(tail -n 30 "$BOT_DIR/music_bot.log" 2>/dev/null | grep "logged in as" | tail -1 | sed -E 's/.*logged in as ([^ ]+).*/\\1/')
+if [ -n "$name" ]; then echo "Bot is online as $name."; else echo "Bot has not logged in yet. Check Status in a minute."; fi
+echo "Bot processes:"
 show_procs
 mem
 '''
@@ -217,9 +218,9 @@ mem
 
 def script_logs(cfg: dict) -> str:
     return _header(cfg) + '''
-echo "== Bot log (last 25 lines)"
+echo "Bot log, last 25 lines:"
 tail -n 25 "$BOT_DIR/music_bot.log" 2>/dev/null | cut -c1-180
-echo "== Errors (last 10)"
+echo "Recent errors:"
 grep -E "ERROR|Traceback" "$BOT_DIR/music_bot.log" 2>/dev/null | tail -n 10 | cut -c1-180
 '''
 

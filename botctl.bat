@@ -20,7 +20,7 @@ if not defined PY (
 if not defined PY (
     echo No working Python found. Install Python from https://www.python.org/downloads/
     echo or uv from https://docs.astral.sh/uv/ and run this again.
-    pause
+    timeout /t 10 >nul
     goto :eof
 )
 if /i not "%PY:~0,6%"=="uv run" (
@@ -36,16 +36,14 @@ if not "%~1"=="" (
 rem ---- Menu ----------------------------------------------------------------
 :menu
 echo.
-echo ===============================
-echo   Music Bot Control
-echo ===============================
-echo   1. Start bot
-echo   2. Stop bot (everything)
-echo   3. Restart bot
-echo   4. Status
-echo   5. Logs
-echo   6. Change server details
-echo   7. Exit
+echo Music Bot Control menu.
+echo 1. Start bot
+echo 2. Stop bot (everything)
+echo 3. Restart bot
+echo 4. Status
+echo 5. Logs
+echo 6. Change server details
+echo 7. Exit
 echo.
 set "CH="
 set "ACT="
@@ -67,7 +65,6 @@ if not defined ACT (
 echo.
 %PY% botctl.py %ACT%
 echo.
-echo Done. Press any key to go back to the menu.
-pause >nul
+echo Finished. Back to the menu.
 set "ACT="
 goto :menu
