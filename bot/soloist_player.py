@@ -374,7 +374,7 @@ class SoloistManager:
         used = {s.port for s in self.by_guild.values()} | self._busy_ports
         return next(p for p in range(BASE_PORT, BASE_PORT + 50) if p not in used)
 
-    async def login(self, user_id: int, key: str, on_step) -> None:
+    async def login(self, user_id: int, key: str, on_step, on_line=None, fresh: bool = False) -> None:
         """Save the key and pair once (Soloist --pair). on_step(text, url) reports
         any link or code Soloist asks the user to open."""
         binary = find_soloist()
@@ -383,6 +383,8 @@ class SoloistManager:
         await self.stop_user(user_id)
         await ensure_pulse()
         session_dir = SESSIONS_DIR / f"soloist-{user_id}"
+        if fresh:
+            shutil.rmtree(session_dir, ignore_errors=True)
         session_dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             os.chmod(session_dir, 0o700)
@@ -402,6 +404,9 @@ class SoloistManager:
                 text = _redact(line.decode("utf-8", "replace").rstrip())
                 tail.append(text)
                 logger.info("soloist pair[%s]: %s", user_id, text[:300])
+                if on_line:
+                    with contextlib.suppress(Exception):
+                        on_line(text)
                 url = next(iter(re.findall(r"https?://\S+", text)), None)
                 if url and url not in reported:
                     reported.add(url)
@@ -472,7 +477,11 @@ class SoloistManager:
         except zipfile.BadZipFile:
             raise SpotifyError("That isn't the spotify-login.zip file from the pairing helper.")
 
-        # Check it really logs in here before saving anything.
+        await self.verify_and_save(user_id, key)
+
+    async def verify_and_save(self, user_id: int, key: str) -> None:
+        """Start the user's saved login once; keep the key only if it works."""
+        binary = find_soloist()
         session = SoloistSession(user_id, 0, self._free_port())
         self._busy_ports.add(session.port)
         try:
