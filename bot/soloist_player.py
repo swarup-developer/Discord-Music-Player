@@ -55,6 +55,11 @@ def valid_key(key: str) -> bool:
     return bool(_KEY_RE.match(key.strip()))
 
 
+class NeedUsername(SpotifyError):
+    def __init__(self):
+        super().__init__("Spotify is busy and didn't tell me your account name.")
+
+
 def find_soloist() -> Optional[str]:
     for c in (os.getenv("SOLOIST_BIN", ""), "/usr/local/bin/soloist", shutil.which("soloist") or ""):
         if c and os.path.isfile(c) and os.access(c, os.X_OK):
@@ -354,6 +359,7 @@ class SoloistSession:
 class SoloistManager:
     def __init__(self, store: UserStore):
         self.store = store
+        self._pending_tokens: dict[int, tuple[dict, float]] = {}
         self.search = Search()
         self.by_guild: dict[int, SoloistSession] = {}
         self._lock = asyncio.Lock()
@@ -441,20 +447,34 @@ class SoloistManager:
         data["soloist_key"] = key.strip()
         self.store.put(user_id, data)
 
-    async def login_with_code(self, user_id: int, key: str, on_code) -> None:
+    async def login_with_code(self, user_id: int, key: str, on_code, username: str = "") -> None:
         """Pairing-code login, all on this server.
 
         on_code(url, user_code) is awaited once with Spotify's pairing link.
+        Raises NeedUsername when Spotify won't tell us the account name; call
+        again with username= and the approved token is reused (no new code).
         """
         from . import spotify_pairing as sp
 
         if not find_soloist():
             raise SpotifyError("Spotify playback isn't installed on this bot's server yet.")
-        code = await sp.start_code()
-        await on_code(code["verification_uri_complete"], code["user_code"])
-        token = await sp.wait_for_token(code)
-        me = await sp.account(token)
-        username = me.get("id") or ""
+        pending = self._pending_tokens.get(user_id)
+        if pending and time.time() - pending[1] < 3000:
+            token_data = pending[0]
+        else:
+            code = await sp.start_code()
+            await on_code(code["verification_uri_complete"], code["user_code"])
+            token_data = await sp.wait_for_token(code)
+            self._pending_tokens[user_id] = (token_data, time.time())
+        token = token_data["access_token"]
+        saved = self.store.get(user_id) or {}
+        username = (username.strip() or token_data.get("username") or saved.get("spotify_username") or "")
+        if not username:
+            username = (await sp.account(token)).get("id") or ""
+        if not username:
+            raise NeedUsername()
+        saved["spotify_username"] = username
+        self.store.put(user_id, saved)
 
         port_found: asyncio.Future = asyncio.get_running_loop().create_future()
 
@@ -474,7 +494,13 @@ class SoloistManager:
             if not port_found.done():
                 raise SpotifyError("Spotify's player didn't start on the server. Try again.")
             await asyncio.sleep(0.5)
-            await sp.add_user(port_found.result(), username, token)
+            try:
+                await sp.add_user(port_found.result(), username, token)
+            except SpotifyError:
+                saved = self.store.get(user_id) or {}
+                if saved.pop("spotify_username", None):
+                    self.store.put(user_id, saved)
+                raise
             await asyncio.wait_for(asyncio.shield(pairing), 45)
         except asyncio.TimeoutError:
             raise SpotifyError("Spotify's player didn't finish the login. Run `/spotify login` again.")
@@ -484,6 +510,7 @@ class SoloistManager:
                 with contextlib.suppress(BaseException):
                     await pairing
         await self.verify_and_save(user_id, key)
+        self._pending_tokens.pop(user_id, None)
 
     async def login_with_pairing_file(self, user_id: int, key: str, zip_bytes: bytes) -> None:
         """Use a login paired on the user's own PC (spotify_pair.bat output)."""

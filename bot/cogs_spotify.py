@@ -22,6 +22,7 @@ from .soloist_player import (
     IDLE_SECONDS,
     KEY_PAGE,
     PULSE_SERVER,
+    NeedUsername,
     SoloistManager,
     ffmpeg_input,
     find_soloist,
@@ -52,6 +53,31 @@ class KeyModal(discord.ui.Modal, title="Paste your Spotify key"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.start_pairing(interaction, self.key.value.strip())
+
+
+class UsernameModal(discord.ui.Modal, title="Your Spotify username"):
+    name = discord.ui.TextInput(label="Spotify username", min_length=2, max_length=64,
+                                placeholder="from spotify.com/account/overview")
+
+    def __init__(self, cog: "SpotifyCog", key: str):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.key = key
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.start_pairing(interaction, self.key, username=self.name.value.strip())
+
+
+class UsernameView(discord.ui.View):
+    def __init__(self, cog: "SpotifyCog", key: str):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.key = key
+        self.add_item(discord.ui.Button(label="Find my username", url="https://www.spotify.com/account/overview/"))
+
+    @discord.ui.button(label="Enter username", style=discord.ButtonStyle.primary)
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(UsernameModal(self.cog, self.key))
 
 
 class KeyView(discord.ui.View):
@@ -292,7 +318,7 @@ class SpotifyCog(commands.Cog):
         if data.pop("pending_key", None) is not None:
             self.store.put(user_id, data)
 
-    async def start_pairing(self, interaction: discord.Interaction, key: str):
+    async def start_pairing(self, interaction: discord.Interaction, key: str, username: str = ""):
         if not valid_key(key):
             return await interaction.response.send_message(
                 "That doesn't look like a Spotify key. It starts with `spak_`. Copy it again.",
@@ -301,7 +327,9 @@ class SpotifyCog(commands.Cog):
         data = self.store.get(interaction.user.id) or {}
         data["pending_key"] = key
         self.store.put(interaction.user.id, data)
-        await interaction.response.send_message("Getting a pairing code from Spotify, one moment.", ephemeral=True)
+        await interaction.response.send_message(
+            "Connecting to Spotify, one moment." if username else "Getting a pairing code from Spotify, one moment.",
+            ephemeral=True)
 
         async def on_code(url: str, user_code: str):
             view = discord.ui.View(timeout=900)
@@ -314,7 +342,14 @@ class SpotifyCog(commands.Cog):
             )
 
         try:
-            await self.players.login_with_code(interaction.user.id, key, on_code)
+            await self.players.login_with_code(interaction.user.id, key, on_code, username=username)
+        except NeedUsername:
+            return await interaction.followup.send(
+                "Spotify approved the login, but it's busy and didn't tell me your account name. "
+                "Press **Find my username**, copy the **Username** shown there, then press **Enter username**. "
+                "You won't need a new pairing code.",
+                view=UsernameView(self, key), ephemeral=True,
+            )
         except SpotifyError as e:
             if "key" in str(e).lower():
                 self._forget_pending(interaction.user.id)

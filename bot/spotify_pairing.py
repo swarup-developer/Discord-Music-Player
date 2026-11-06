@@ -21,12 +21,16 @@ import os
 import secrets
 from urllib.parse import urlencode
 
+import logging
+
 import httpx
 from Crypto.Cipher import AES
 
 from .spotify_connect import PremiumRequired, SpotifyError
 
 # Spotify's desktop client ID, as used by librespot for Connect logins.
+logger = logging.getLogger(__name__)
+
 CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"
 DEVICE_AUTH_URL = "https://accounts.spotify.com/oauth2/device/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -57,8 +61,8 @@ async def start_code() -> dict:
     return r.json()
 
 
-async def wait_for_token(code: dict) -> str:
-    """Poll until the user approves the code. Returns an access token."""
+async def wait_for_token(code: dict) -> dict:
+    """Poll until the user approves the code. Returns Spotify's token response."""
     interval = max(int(code.get("interval", 5)), 2)
     deadline = asyncio.get_running_loop().time() + min(int(code.get("expires_in", 600)), 900)
     async with httpx.AsyncClient(timeout=20) as client:
@@ -70,7 +74,8 @@ async def wait_for_token(code: dict) -> str:
             })
             data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
             if r.status_code == 200 and data.get("access_token"):
-                return data["access_token"]
+                logger.info("Spotify pairing token fields: %s", sorted(data))
+                return data
             err = data.get("error", "")
             if err == "slow_down":
                 interval += 2
@@ -92,20 +97,25 @@ async def account(token: str) -> dict:
     API (429) must not stop the login.
     """
     async with httpx.AsyncClient(timeout=20) as client:
-        for attempt in range(3):
+        waited = 0.0
+        while True:
             r = await client.get("https://api.spotify.com/v1/me", headers={"Authorization": f"Bearer {token}"})
             if r.status_code == 200:
                 me = r.json()
                 if me.get("product") and me["product"] != "premium":
                     raise PremiumRequired()
                 return me
+            logger.info("Spotify /v1/me answered %s (Retry-After %s)", r.status_code, r.headers.get("Retry-After"))
             if r.status_code != 429:
                 break
             try:
-                wait = min(float(r.headers.get("Retry-After", "2")), 8)
+                wait = max(float(r.headers.get("Retry-After", "3")), 1)
             except ValueError:
-                wait = 2
+                wait = 3
+            if waited + wait > 60:
+                break
             await asyncio.sleep(wait)
+            waited += wait
     return {}
 
 
