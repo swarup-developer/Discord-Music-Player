@@ -132,6 +132,7 @@ Type `/` in Discord to see all commands. Use `/join` first so the bot is in your
 | `/search <query>` | Search on the current provider and pick a result |
 | `/url <link>` | Play a YouTube link or a direct audio stream |
 | `/provider` | Choose the default source: YouTube Music, JioSaavn, SoundCloud, Spotify or Local Files |
+| `/spotify login` / `/spotify logout` | Connect or remove your Spotify Premium account (pairing code) |
 | `/lyrics [song]` | Show lyrics for the current or a given song |
 
 ### Playback and queue

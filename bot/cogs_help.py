@@ -36,7 +36,8 @@ class HelpCog(commands.Cog):
                 "`/diagnose` check common voice issues\n"
                 "`/queue` show the queue, `/remove <number>` drop a song from it\n"
                 "`/playlist save/load/list/delete` keep song lists for this server\n"
-                "`/mood` endless music for a mood, `/wrapped` this server's top songs and listeners"
+                "`/mood` endless music for a mood, `/wrapped` this server's top songs and listeners\n"
+                "`/spotify login` connect your Spotify Premium account, then pick Spotify in `/provider`"
             ),
             inline=False,
         )

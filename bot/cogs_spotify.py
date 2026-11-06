@@ -156,7 +156,6 @@ class GuildPlayer:
             if kind != "pos":
                 self.paused = kind == "paused"
                 self.last_activity = time.time()
-                self.key_refused = False if kind == "playing" else self.key_refused
                 self.cog._sync_controller(self)
         elif kind == "preload_next" and self.queue:
             nxt = self.queue[0]
@@ -167,12 +166,21 @@ class GuildPlayer:
         elif kind == "unavailable":
             name = describe(self.current) if self.current else "This song"
             if self.key_refused:
-                msg = (f"Spotify wouldn't send the audio for **{name}** to this account, so it was skipped. "
-                       "This is a block on Spotify's side for this account.")
-            else:
-                msg = f"**{name}** isn't available on Spotify here, skipping."
-            await self.cog._say(self, msg)
-            await self.next(auto=True)
+                # Every song fails the same way on such an account: stop
+                # instead of running through the whole queue.
+                self.queue.clear()
+                self.current = None
+                with contextlib.suppress(Exception):
+                    await self.send("stop")
+                self.cog._sync_controller(self)
+                await self.cog._say(self, (
+                    f"Spotify refused to send the audio for **{name}** to this account. Spotify does this "
+                    "to some accounts (mostly newer ones) in every app except its own, so nothing can play "
+                    "from this account here. Try an older Spotify Premium account with `/spotify logout` "
+                    "and `/spotify login`, or pick another source with `/provider`."))
+                return
+            await self.cog._say(self, f"**{name}** isn't available on Spotify here, skipping.")
+            await self.next(auto=True, failed=True)
 
     async def send(self, cmd: str, **fields):
         if not self.alive or not self.proc or not self.proc.stdin:
@@ -210,16 +218,28 @@ class GuildPlayer:
     async def play_track(self, track: dict):
         track = await self._fill(track)
         self.current = track
+        self.key_refused = False
         self.paused = False
         self.position_ms, self.position_at = 0, time.time()
         self.last_activity = time.time()
         await self.send("load", uri=track["uri"], pos=0, play=True)
         self.cog._sync_controller(self, new_track=True)
 
-    async def next(self, auto: bool = False):
+    async def next(self, auto: bool = False, failed: bool = False):
+        music = self.cog.music
+        mode = music.state.get_loop_mode(self.guild_id) if music else "off"
+        shuffle = bool(music and music.state.shuffle_enabled.get(self.guild_id))
+        if auto and not failed and mode == "song" and self.current:
+            await self.play_track(self.current)
+            return True
         if self.current:
             self.history.append(self.current)
             del self.history[:-50]
+            if mode == "queue" and not failed:
+                self.queue.append(self.current)
+        if shuffle and len(self.queue) > 1:
+            import random
+            self.queue.insert(0, self.queue.pop(random.randrange(len(self.queue))))
         if not self.queue:
             self.current = None
             await self.send("stop")

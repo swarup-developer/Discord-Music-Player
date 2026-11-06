@@ -329,6 +329,11 @@ class MusicCog(commands.Cog):
     def _session(self, guild_id: int):
         return self.state.session_for(guild_id)
 
+    def _spotify_queue_len(self, guild_id: int) -> int:
+        cog = self.bot.get_cog("SpotifyCog")
+        p = cog.sessions.get(guild_id) if cog else None
+        return len(p.queue) if p else 0
+
     def _spotify(self, guild_id: int):
         """The Spotify cog when Spotify is what's playing in this server, else None."""
         cog = self.bot.get_cog("SpotifyCog")
@@ -529,6 +534,9 @@ class MusicCog(commands.Cog):
                 return await interaction.response.send_message("Server only.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
             self.cog.state.clear_queue(interaction.guild.id)
+            spotify = interaction.client.get_cog("SpotifyCog")
+            if spotify and spotify.sessions.get(interaction.guild.id):
+                spotify.sessions[interaction.guild.id].queue.clear()
             await self.cog.refresh_controller(interaction.guild.id)
 
         @discord.ui.button(label="Vol -", style=discord.ButtonStyle.secondary, row=1)
@@ -669,7 +677,7 @@ class MusicCog(commands.Cog):
                 lines.append(f"From **{session.mood.capitalize()}** mood radio")
         lines.append("")
         lines.append(
-            f"**Status:** {status} • **Volume:** {int(volume * 100)}% • **Queue:** {len(queue)}\n"
+            f"**Status:** {status} • **Volume:** {int(volume * 100)}% • **Queue:** {len(queue) + self._spotify_queue_len(guild_id)}\n"
             f"**Loop:** {loop_str} • **Shuffle:** {'On' if shuffle else 'Off'}"
             + (f" • **Mood:** {session.mood.capitalize()}" if session.mood else "") + "\n"
             f"**Effects:** {effects_str} • **EQ:** {eq_str}"
@@ -2570,7 +2578,7 @@ class MusicCog(commands.Cog):
         names = self.state.playlists_for(interaction.guild.id)
         return [
             discord.app_commands.Choice(name=f"{n} ({len(t)} songs)"[:100], value=n)
-            for n in sorted(names) if current.lower() in n.lower()
+            for n, t in sorted(names.items()) if current.lower() in n.lower()
         ][:25]
 
     @playlist_group.command(name="save", description="Save the current song and the queue as a playlist")

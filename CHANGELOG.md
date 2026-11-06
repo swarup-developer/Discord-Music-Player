@@ -7,12 +7,34 @@ Releases are named by date.
 
 ## [2026-11-06] - Spotify Premium playback
 
-- Spotify provider: play straight from Spotify with your Spotify Premium
-  account. Log in once with `/spotify login` (a Spotify pairing code: open the
-  link, press Agree), choose **Spotify** in `/provider`, then `/play` songs,
-  albums, playlists or Spotify links. Pause, skip, previous, seek, volume and
-  stop work as usual. `/spotify logout` removes your login.
-- YouTube: tries one more fast audio-only source first.
+### Added
+
+- **Spotify provider**: play straight from Spotify with your own Spotify
+  Premium account, no YouTube involved.
+  - Log in once with `/spotify login`: the bot sends a Spotify pairing link
+    and code. Open it on your phone or PC, press **Agree**, done.
+  - Choose **Spotify** in `/provider`, then `/play` searches Spotify, or takes
+    a Spotify song, album or playlist link.
+  - Pause, resume, Next, Prev, -10s/+10s, volume, Stop, Clear Queue, repeat
+    (song or queue) and shuffle all work as usual.
+  - The next song is loaded ahead of time, so songs change without a gap.
+  - `/spotify logout` removes your login.
+- Spotify links from people who aren't logged in still play as before.
+
+### Changed
+
+- YouTube: one more fast audio-only source is tried first.
+
+### Fixed
+
+- Typing a playlist name in `/playlist load` or `/playlist delete` showed no
+  suggestions (the suggestion list crashed).
+
+### Known issue
+
+- Spotify refuses to send audio to some accounts (mostly newer ones) in every
+  app except its own. The bot then says so once and stops; an older Premium
+  account usually works.
 
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 

@@ -90,6 +90,19 @@ sudo -u "$USER_NAME" npx playwright install chromium
 npx playwright install-deps chromium
 cd "$BOT_DIR"
 
+# 7b. Spotify (Premium) player. Builds spotify-helper/ when Rust is installed;
+#     otherwise copy a prebuilt dcbot-spotify to bin/ (see README).
+if [ ! -x "$BOT_DIR/bin/dcbot-spotify" ]; then
+  if command -v cargo >/dev/null 2>&1; then
+    echo "--> Building the Spotify player (dcbot-spotify)..."
+    ( cd "$BOT_DIR/spotify-helper" && cargo build --release \
+      && mkdir -p "$BOT_DIR/bin" && cp target/release/dcbot-spotify "$BOT_DIR/bin/" ) \
+      || echo "Warning: could not build the Spotify player; the Spotify provider stays off."
+  else
+    echo "Note: Rust is not installed, so the Spotify provider stays off until bin/dcbot-spotify exists."
+  fi
+fi
+
 # 8. Cloudflare WARP in proxy mode (127.0.0.1:40000). YouTube blocks most
 #    datacenter IPs; routing only YouTube traffic through WARP fixes that
 #    without any cookies. Proxy mode leaves SSH and all other traffic alone.
