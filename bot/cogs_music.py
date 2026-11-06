@@ -293,9 +293,8 @@ class MusicCog(commands.Cog):
         IPTVManager.is_busy = staticmethod(
             lambda: any(vc.is_playing() for vc in self.bot.voice_clients)
         )
-        # Load IPTV channels and keep probing their streams in the background,
-        # so dead channels are hidden from /tv.
-        asyncio.create_task(IPTVManager.health_loop())
+        # IPTV channels load (and their streams get probed) on the first /tv
+        # command instead of at startup, to keep the bot's idle RAM low.
         asyncio.create_task(self._progress_loop())
 
         # Right-click a message -> Apps -> "Play audio files": plays the files

@@ -100,6 +100,17 @@ class IPTVManager:
     # music plays starved the event loop and Discord marked the bot as not
     # responding, so probes wait until playback stops.
     is_busy = staticmethod(lambda: False)
+    _health_task: Optional["asyncio.Task"] = None
+
+    @classmethod
+    def ensure_started(cls) -> None:
+        """Start the background loader/prober the first time /tv is used.
+
+        Loading 12k channels and their health data at startup cost ~20MB of
+        RAM even for servers that never watch TV, so it now happens lazily.
+        """
+        if cls._health_task is None:
+            cls._health_task = asyncio.create_task(cls.health_loop())
 
     # ---------- health ----------
     @classmethod
@@ -279,6 +290,9 @@ class IPTVManager:
 
     @classmethod
     async def load_channels(cls, force_refresh: bool = False) -> None:
+        cls.ensure_started()
+        if not cls._health:
+            await asyncio.to_thread(cls._load_health)
         if cls._is_loading:
             wait_count = 0
             while cls._is_loading and wait_count < 10:

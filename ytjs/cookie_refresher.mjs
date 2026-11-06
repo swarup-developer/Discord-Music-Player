@@ -114,6 +114,18 @@ async function refresh() {
   }
 }
 
+// --once: refresh and exit (run from a systemd timer, so no Node process
+// stays resident between refreshes).
+if (process.argv.includes('--once')) {
+  try {
+    await refresh();
+  } catch (err) {
+    log(`Refresh failed: ${err.message}`);
+    process.exitCode = 1;
+  }
+  process.exit();
+}
+
 log(`dcBot cookie refresher started; refreshing every ${REFRESH_HOURS}h.`);
 for (;;) {
   try {

@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
+## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
+
+### Added
+
+- The next song in the queue is loaded in the background while the current
+  one plays, so tracks change without waiting.
+- Recently played YouTube songs and searches are remembered for a few hours,
+  so replays, Prev and repeat start instantly.
+
+### Changed
+
+- YouTube lookups are much faster and no longer time out on a busy machine.
+- The bot uses far less memory when idle (about 60MB instead of 90MB+): the
+  YouTube fallback library and the live TV channel list now load only when
+  they are first needed.
+- The automatic cookie refresher runs on a timer instead of staying in
+  memory.
+
+### Fixed
+
+- YouTube songs failed with "Requested format is not available": the
+  fallback extractor was limited to a JavaScript runtime that was not
+  installed and to player clients YouTube no longer serves.
+- `/join` and `/play` could fail with "Unknown interaction" when the bot was
+  briefly busy; heavy work no longer blocks it, and `/join` still keeps a
+  successful connection if the reply arrives late.
+- A YouTube song that stopped within the first seconds (HTTP 403) is now
+  loaded again once instead of being skipped.
+- Fresh installs: the setup script now installs `unzip` and builds the
+  current PO token server correctly.
+
 ## [2026-11-02] - Playlists, mood radio, Wrapped and signed-in cookies
 
 ### Added

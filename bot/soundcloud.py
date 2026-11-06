@@ -5,7 +5,7 @@ import tempfile
 from typing import Optional, List, Dict, Any
 import discord
 import httpx
-import yt_dlp
+from .lazy_ytdlp import yt_dlp
 
 from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
 

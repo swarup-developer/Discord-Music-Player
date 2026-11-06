@@ -13,7 +13,7 @@ from typing import Optional, Any
 
 import discord
 import httpx
-import yt_dlp
+from .lazy_ytdlp import yt_dlp
 
 from .audio_source import apply_seek, build_ffmpeg_options, make_stream_source
 from .config import YOUTUBE_PROXY
@@ -156,13 +156,13 @@ def check_pot_provider() -> bool:
         if sock.connect_ex((POT_SERVER_HOST, POT_SERVER_PORT)) == 0:
             logger.info("POT server is listening on %s:%s.", POT_SERVER_HOST, POT_SERVER_PORT)
         else:
-            logger.error(
-                "POT server is NOT listening on %s:%s. yt-dlp will get no PO "
-                "token and YouTube playback will be unreliable. Start it with "
-                "run_windows.bat, or `supervisorctl start bgutil-pot` on the server.",
+            # Optional: the resolver is the primary path and yt-dlp's default
+            # clients work without a PO token. Kept off on the server to save RAM.
+            logger.info(
+                "POT server is not running on %s:%s (optional; yt-dlp fallback "
+                "uses clients that need no PO token).",
                 POT_SERVER_HOST, POT_SERVER_PORT,
             )
-            ok = False
     except Exception as e:
         logger.warning("Could not probe the POT server port: %s", e)
     finally:

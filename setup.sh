@@ -31,7 +31,7 @@ apt-get update -y && apt-get upgrade -y
 
 # 2. Install core system dependencies
 echo "--> Installing core dependencies (curl, git, ffmpeg, supervisor)..."
-apt-get install -y curl git ffmpeg supervisor python3 python3-pip python3-venv build-essential lsof
+apt-get install -y curl git unzip ffmpeg supervisor python3 python3-pip python3-venv build-essential lsof
 
 # 3. Install Node.js 22 LTS. The YouTube resolver routes its traffic through
 #    YOUTUBE_PROXY with NODE_USE_ENV_PROXY, which needs Node >= 22.21; on older
@@ -68,8 +68,9 @@ if [ ! -d "bgutil-ytdlp-pot-provider" ]; then
 fi
 
 cd bgutil-ytdlp-pot-provider/server
-sudo -u "$USER_NAME" npm install
-sudo -u "$USER_NAME" npm run build
+sudo -u "$USER_NAME" npm ci
+# bgutil 2.x has no "build" script; compile TypeScript directly.
+sudo -u "$USER_NAME" npx tsc
 
 # 6. Set up Python virtual environment and install bot dependencies
 echo "--> Setting up Python virtual environment in $BOT_DIR..."
@@ -84,7 +85,7 @@ sudo -u "$USER_NAME" .venv/bin/pip install -r requirements.txt
 #    the headless Chromium used by the automatic cookie refresher.
 echo "--> Installing YouTube resolver + cookie refresher dependencies (ytjs)..."
 cd "$BOT_DIR/ytjs"
-sudo -u "$USER_NAME" npm install
+sudo -u "$USER_NAME" npm ci
 sudo -u "$USER_NAME" npx playwright install chromium
 npx playwright install-deps chromium
 cd "$BOT_DIR"
@@ -109,34 +110,45 @@ if [ ! -f "$BOT_DIR/.env" ]; then
 fi
 grep -q '^YOUTUBE_PROXY=' "$BOT_DIR/.env" || echo 'YOUTUBE_PROXY=http://127.0.0.1:40000' >> "$BOT_DIR/.env"
 
-# 9. Automatic cookie refresher (systemd, low priority). Every few hours a
-#    headless Chromium opens YouTube through WARP and atomically replaces
-#    cookies.txt -- nobody has to export cookies by hand.
-echo "--> Installing the automatic cookie refresher service..."
+# 9. Automatic cookie refresher (systemd timer, low priority). Every few hours
+#    a headless Chromium opens YouTube through WARP and atomically replaces
+#    cookies.txt. It runs as a one-shot job, so nothing stays in RAM between
+#    refreshes.
+echo "--> Installing the automatic cookie refresher timer..."
 cat <<EOF > /etc/systemd/system/dcbot-cookies.service
 [Unit]
-Description=dcBot YouTube cookie refresher
+Description=dcBot YouTube cookie refresher (one run)
 After=network-online.target warp-svc.service
 Wants=network-online.target
 
 [Service]
+Type=oneshot
 User=$USER_NAME
 WorkingDirectory=$BOT_DIR/ytjs
-ExecStart=$(command -v node) $BOT_DIR/ytjs/cookie_refresher.mjs
-Restart=always
-RestartSec=30
+ExecStart=$(command -v node) $BOT_DIR/ytjs/cookie_refresher.mjs --once
 Nice=19
 IOSchedulingClass=idle
 CPUQuota=50%
 MemoryMax=450M
+TimeoutStartSec=10min
 StandardOutput=append:$BOT_DIR/ytjs/cookies.out.log
 StandardError=append:$BOT_DIR/ytjs/cookies.err.log
+EOF
+cat <<EOF > /etc/systemd/system/dcbot-cookies.timer
+[Unit]
+Description=Refresh dcBot YouTube cookies every 6 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
 systemctl daemon-reload
-systemctl enable --now dcbot-cookies
+systemctl disable --now dcbot-cookies.service 2>/dev/null || true
+systemctl enable --now dcbot-cookies.timer
 
 # 10. Create Supervisor Configuration Files
 echo "--> Generating Supervisor configuration files..."
@@ -144,11 +156,11 @@ echo "--> Generating Supervisor configuration files..."
 # Supervisor config for POT Server
 cat <<EOF > /etc/supervisor/conf.d/bgutil_pot.conf
 [program:bgutil-pot]
-command=node $USER_HOME/bgutil-ytdlp-pot-provider/server/build/main.js --port 4416
+command=node --max-old-space-size=64 $USER_HOME/bgutil-ytdlp-pot-provider/server/build/main.js --port 4416
 directory=$USER_HOME/bgutil-ytdlp-pot-provider/server
 user=$USER_NAME
-autostart=true
-autorestart=true
+autostart=false
+autorestart=unexpected
 stderr_logfile=$USER_HOME/bgutil-ytdlp-pot-provider/server/err.log
 stdout_logfile=$USER_HOME/bgutil-ytdlp-pot-provider/server/out.log
 EOF
@@ -159,6 +171,7 @@ cat <<EOF > /etc/supervisor/conf.d/dcbot_ytjs.conf
 command=node $BOT_DIR/ytjs/server.mjs
 directory=$BOT_DIR/ytjs
 user=$USER_NAME
+environment=NODE_USE_ENV_PROXY="1",HTTPS_PROXY="http://127.0.0.1:40000",HTTP_PROXY="http://127.0.0.1:40000",NO_PROXY="127.0.0.1,localhost",YOUTUBE_PROXY="http://127.0.0.1:40000"
 autostart=true
 autorestart=true
 stderr_logfile=$BOT_DIR/ytjs/err.log
@@ -173,7 +186,7 @@ directory=$BOT_DIR
 user=$USER_NAME
 autostart=true
 autorestart=true
-environment=PYTHONMALLOC=malloc
+environment=PYTHONMALLOC=malloc,MALLOC_ARENA_MAX=2
 stderr_logfile=$BOT_DIR/err.log
 stdout_logfile=$BOT_DIR/out.log
 EOF
@@ -182,7 +195,7 @@ EOF
 echo "--> Restarting Supervisor services..."
 supervisorctl reread
 supervisorctl update
-supervisorctl restart bgutil-pot
+# bgutil-pot is optional (yt-dlp fallback only) and stays off to save ~100MB RAM.
 supervisorctl restart dcbot-ytjs
 supervisorctl restart dcbot
 
