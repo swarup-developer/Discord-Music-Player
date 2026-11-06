@@ -9,20 +9,17 @@ Releases are named by date.
 
 ### Added
 
-- Spotify playback with your own Spotify Premium account. Log in once with
-  `/spotify login`, choose **Spotify** in `/provider`, and `/play` searches
-  and plays straight from Spotify (no YouTube involved). Track, album and
-  playlist links work, and the usual pause, skip, previous, seek, stop and
-  volume controls work with it.
-- `/spotify login` walks you through creating your own Spotify app and
-  logging in. Logins are stored encrypted and removed with `/spotify logout`.
-- The bot shows up as "Discord Music Bot" in your Spotify devices, so you can
-  also pause or skip from the Spotify app.
+- Spotify provider: play straight from Spotify with your own Spotify Premium
+  account, through Spotify Soloist (Spotify's official player). Log in once
+  with `/spotify login` by pasting your Soloist key, choose **Spotify** in
+  `/provider`, and `/play` searches and plays from Spotify. No YouTube or
+  JioSaavn involved. Track, album and playlist links work, and the usual
+  pause, skip, previous, seek, stop and volume controls work with it.
+- `/spotify logout` removes your login. Keys are stored encrypted.
 
 ### Changed
 
-- The Spotify provider no longer looks songs up on YouTube; it plays from
-  Spotify itself and needs `/spotify login` first.
+- The Spotify provider no longer looks songs up on YouTube.
 
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 

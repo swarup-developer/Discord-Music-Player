@@ -1,16 +1,16 @@
-"""Spotify playback from the user's own Premium account.
+"""Spotify (Premium) through Spotify Soloist, Spotify's official player.
 
-Only two commands of its own: /spotify login and /spotify logout. Playback
-uses the bot's normal commands: pick Spotify in /provider, then /play searches
-Spotify and plays from it, and pause / resume / skip / previous / seek / stop /
-volume (commands and controller buttons) control Spotify while it's playing.
-MusicCog calls into this cog through play() and control().
+Users only run /spotify login once (paste their Soloist key). Playback uses
+the bot's normal commands: choose Spotify in /provider, then /play; pause,
+resume, skip, previous, seek, stop and volume control it while it plays.
+MusicCog calls play() and control() here.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from typing import Optional
 
@@ -18,103 +18,78 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .spotify_connect import (
+from .soloist_player import (
     IDLE_SECONDS,
-    PCM_BEFORE_OPTIONS,
-    REDIRECT_URI,
-    SessionManager,
-    SpotifyAuth,
-    SpotifyError,
-    UserStore,
-    find_librespot,
-    parse_spotify_link,
-    valid_client_id,
+    KEY_PAGE,
+    PULSE_SERVER,
+    SoloistManager,
+    ffmpeg_input,
+    find_soloist,
+    valid_key,
 )
+from .spotify_connect import SpotifyError, UserStore, parse_spotify_link
 
 logger = logging.getLogger(__name__)
 
-LOGIN_TEXT = f"""**Connect your Spotify Premium account** (one time, about 3 minutes)
+# FFmpeg (started by discord.py) records from the bot's private PulseAudio.
+os.environ.setdefault("PULSE_SERVER", PULSE_SERVER)
 
-1. Open https://developer.spotify.com/dashboard and log in with your **Premium** account.
-2. Click **Create app**. Name and description can be anything.
-3. Redirect URI: paste exactly `{REDIRECT_URI}` and click **Add**.
-4. Tick **Web API**, accept the terms and **Save**.
-5. Open **Settings** and copy the **Client ID** (no Client Secret needed).
-6. Press **Enter Client ID** below.
-
-Spotify Premium is required. This plays Spotify through an unofficial player, which Spotify's terms don't allow; use it at your own risk."""
-
-AFTER_ID_TEXT = """**Log in with Spotify**
-
-1. Press **Log in with Spotify** and click **Agree**.
-2. Your browser then shows a page that "can't be reached". That is expected.
-3. Copy the **whole address** from the address bar (it starts with `http://127.0.0.1:8888/callback?code=`).
-4. Press **Paste the address** and paste it."""
+LOGIN_TEXT = (
+    "**Connect Spotify (Premium)**\n"
+    "1. Press **Get your key** and log in with your Spotify Premium account. "
+    "Create a key there and copy it (it starts with `spak_`).\n"
+    "2. Press **Paste key** and paste it.\n\n"
+    "That's all. Your key is stored encrypted and removed with `/spotify logout`."
+)
 
 
-class ClientIdModal(discord.ui.Modal, title="Your Spotify Client ID"):
-    client_id = discord.ui.TextInput(label="Client ID (32 letters and numbers)", min_length=32, max_length=40)
-
-    def __init__(self, cog: "SpotifyCog"):
-        super().__init__(timeout=600)
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        cid = self.client_id.value.strip()
-        if not valid_client_id(cid):
-            return await interaction.response.send_message(
-                "That isn't a Client ID. It's 32 letters and numbers from your app's Settings page.", ephemeral=True
-            )
-        url = self.cog.auth.login_url(interaction.user.id, cid)
-        view = discord.ui.View(timeout=900)
-        view.add_item(discord.ui.Button(label="Log in with Spotify", url=url))
-        view.add_item(PasteButton(self.cog))
-        await interaction.response.send_message(AFTER_ID_TEXT, view=view, ephemeral=True)
-
-
-class PasteModal(discord.ui.Modal, title="Paste the address"):
-    address = discord.ui.TextInput(
-        label="The whole address from your browser",
-        style=discord.TextStyle.paragraph, max_length=1500,
-        placeholder="http://127.0.0.1:8888/callback?code=...",
-    )
+class KeyModal(discord.ui.Modal, title="Paste your Spotify key"):
+    key = discord.ui.TextInput(label="Key (starts with spak_)", min_length=20, max_length=200,
+                               placeholder="spak_...")
 
     def __init__(self, cog: "SpotifyCog"):
         super().__init__(timeout=900)
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        key = self.key.value.strip()
+        if not valid_key(key):
+            return await interaction.response.send_message(
+                "That doesn't look like a Spotify key. It starts with `spak_`. Copy it again from the key page.",
+                ephemeral=True,
+            )
+        await interaction.response.send_message("Connecting to Spotify, one moment.", ephemeral=True)
+
+        async def on_step(text: str, url: str):
+            view = discord.ui.View(timeout=600)
+            view.add_item(discord.ui.Button(label="Approve on Spotify", url=url))
+            await interaction.followup.send(
+                "Spotify wants you to approve this player once. Press **Approve on Spotify**, "
+                "log in if asked, and confirm. I'll continue by myself.",
+                view=view, ephemeral=True,
+            )
+
         try:
-            data = await self.cog.auth.finish_login(interaction.user.id, self.address.value)
+            await self.cog.players.login(interaction.user.id, key, on_step)
         except SpotifyError as e:
             return await interaction.followup.send(str(e), ephemeral=True)
         except Exception:
             logger.exception("Spotify login failed")
             return await interaction.followup.send("Spotify login failed. Try `/spotify login` again.", ephemeral=True)
         await interaction.followup.send(
-            f"Step 1 done: your Spotify app is connected as **{data['display_name']}**.", ephemeral=True
+            "Spotify is connected. Choose **Spotify** in `/provider`, then use `/play` as usual.", ephemeral=True
         )
-        await self.cog.link_player(interaction)
-
-
-class PasteButton(discord.ui.Button):
-    def __init__(self, cog: "SpotifyCog"):
-        super().__init__(label="Paste the address", style=discord.ButtonStyle.primary)
-        self.cog = cog
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(PasteModal(self.cog))
 
 
 class LoginView(discord.ui.View):
     def __init__(self, cog: "SpotifyCog"):
         super().__init__(timeout=900)
         self.cog = cog
+        self.add_item(discord.ui.Button(label="Get your key", url=KEY_PAGE))
 
-    @discord.ui.button(label="Enter Client ID", style=discord.ButtonStyle.primary)
-    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ClientIdModal(self.cog))
+    @discord.ui.button(label="Paste key", style=discord.ButtonStyle.primary)
+    async def paste(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(KeyModal(self.cog))
 
 
 class SpotifyCog(commands.Cog):
@@ -123,8 +98,7 @@ class SpotifyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.store = UserStore()
-        self.auth = SpotifyAuth(self.store)
-        self.sessions = SessionManager(self.auth)
+        self.players = SoloistManager(self.store)
         self._sources: dict[int, discord.AudioSource] = {}
         self._idle_task: Optional[asyncio.Task] = None
 
@@ -134,7 +108,7 @@ class SpotifyCog(commands.Cog):
     async def cog_unload(self):
         if self._idle_task:
             self._idle_task.cancel()
-        await self.sessions.stop_all()
+        await self.players.stop_all()
 
     # ---------------------------------------------------------- helpers ---
 
@@ -143,7 +117,7 @@ class SpotifyCog(commands.Cog):
         return self.bot.get_cog("MusicCog")
 
     def logged_in(self, user_id: int) -> bool:
-        return self.store.get(user_id) is not None
+        return self.players.logged_in(user_id)
 
     def _voice_client(self, guild_id: int) -> Optional[discord.VoiceClient]:
         music = self.music
@@ -151,7 +125,6 @@ class SpotifyCog(commands.Cog):
         return vc if vc and vc.is_connected() else None
 
     def is_active(self, guild_id: int) -> bool:
-        """True while Spotify is what the voice client is playing (or paused on)."""
         vc = self._voice_client(guild_id)
         src = self._sources.get(guild_id)
         return bool(vc and src is not None and vc.source is src and (vc.is_playing() or vc.is_paused()))
@@ -163,12 +136,12 @@ class SpotifyCog(commands.Cog):
             return
         music = self.music
         if music:
-            # Stop whatever another provider was playing, without advancing its queue.
             music._stop_current_track_for_manual_replace(guild_id)
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         volume = music.state.get_volume(guild_id) if music else 0.5
-        pcm = discord.FFmpegPCMAudio(str(session.fifo), before_options=PCM_BEFORE_OPTIONS, options="-vn")
+        source_in, before = ffmpeg_input(session.sink)
+        pcm = discord.FFmpegPCMAudio(source_in, before_options=before, options="-vn")
         source = discord.PCMVolumeTransformer(pcm, volume=volume ** 2)
         self._sources[guild_id] = source
 
@@ -176,93 +149,94 @@ class SpotifyCog(commands.Cog):
             if error:
                 logger.warning("Spotify audio ended with error: %s", error)
             if self._sources.get(gid) is src:
-                # Something else took over the voice client (another provider,
-                # /stop, /go): Spotify for this server is done.
                 self._sources.pop(gid, None)
-                asyncio.run_coroutine_threadsafe(self.sessions.stop(gid), self.bot.loop)
+                self._clear_now_playing(gid)
+                asyncio.run_coroutine_threadsafe(self.players.stop(gid), self.bot.loop)
 
         vc.play(source, after=after)
-        if music:
-            s = music._session(guild_id)
-            s.is_playing = True
-            s.start_time = time.time()
-            s.paused_duration = 0.0
-            s.last_paused_at = None
+
+    def _clear_now_playing(self, guild_id: int):
+        music = self.music
+        if not music:
+            return
+        s = music._session(guild_id)
+        if getattr(s, "spotify_song", None) is not None:
+            s.spotify_song = None
+            s.current_song_title = None
+            s.is_playing = False
 
     def _on_event(self, session, etype: str, data: dict):
         guild_id = session.guild_id
-        vc = self._voice_client(guild_id)
         music = self.music
-        if etype == "metadata" and music:
-            artists = data.get("artist_names") or []
-            if isinstance(artists, list):
-                artists = ", ".join(artists)
+        np = session.now_playing
+        if music and np:
             s = music._session(guild_id)
-            s.current_song_title = f"{data.get('name', 'Spotify')} - {artists}" if artists else data.get("name", "Spotify")
-            s.current_song_data = None
-            s.start_time = time.time() - (int(data.get("position") or 0) / 1000)
-            s.paused_duration = 0.0
-            s.last_paused_at = None
-            asyncio.create_task(music.refresh_controller(guild_id))
-        if not self.is_active(guild_id) or not vc:
-            return
-        # Follow pause / resume done from the Spotify app on someone's phone.
-        if etype in ("paused", "stopped", "not_playing") and vc.is_playing():
-            vc.pause()
-        elif etype == "playing" and vc.is_paused():
-            vc.resume()
+            title = f"{np['name']} - {np['artists']}" if np.get("artists") else np["name"]
+            if s.current_song_title != title:
+                s.current_song_title = title
+                s.current_song_data = None
+                s.spotify_song = {"duration": (int(np.get("duration_ms") or 0) / 1000) or None,
+                                  "image": np.get("image")}
+                s.is_playing = True
+                s.start_time = time.time() - session.position_ms / 1000
+                s.paused_duration = 0.0
+                s.last_paused_at = None
+                asyncio.create_task(music.refresh_controller(guild_id))
+        vc = self._voice_client(guild_id)
+        if vc and self.is_active(guild_id):
+            if session.paused and vc.is_playing():
+                vc.pause()
+            elif not session.paused and vc.is_paused():
+                vc.resume()
 
     async def _idle_loop(self):
         while True:
             await asyncio.sleep(30)
             now = time.time()
-            for gid, s in list(self.sessions.by_guild.items()):
+            for gid, s in list(self.players.by_guild.items()):
                 if not s.alive:
                     self._sources.pop(gid, None)
-                    await self.sessions.stop(gid)
+                    await self.players.stop(gid)
                 elif not self._voice_client(gid) and now - s.last_activity > 60:
-                    await self.sessions.stop(gid)
+                    await self.players.stop(gid)
                 elif (s.paused or not self.is_active(gid)) and now - s.last_activity > IDLE_SECONDS:
                     src = self._sources.pop(gid, None)
                     vc = self._voice_client(gid)
                     if vc and src is not None and vc.source is src:
                         vc.stop()
-                    await self.sessions.stop(gid)
+                    await self.players.stop(gid)
 
     # ------------------------------------------------ called by MusicCog ---
 
     async def play(self, interaction: discord.Interaction, query: str):
-        """/play when the provider is Spotify (or a Spotify link was given)."""
         guild_id = interaction.guild.id
         vc = self._voice_client(guild_id)
         if not vc:
             return await interaction.followup.send("Use `/join` first so the bot is in your voice channel.")
-        current = self.sessions.get(guild_id)
-        # The account that's already playing here keeps playing (and searching),
-        # so a second listener can queue songs without logging in.
+        current = self.players.get(guild_id)
         account = current.user_id if current else interaction.user.id
         if not current and not self.logged_in(account):
             return await interaction.followup.send(
-                "This server plays from **Spotify**. Log in once with `/spotify login` (Spotify Premium needed), "
-                "or pick another source with `/provider`."
+                "This server plays from **Spotify**. Connect your Spotify Premium account once with "
+                "`/spotify login`, or pick another source with `/provider`."
             )
         try:
             uri = parse_spotify_link(query)
             info = None
             if uri and uri.startswith("spotify:track:"):
-                info = await self.auth.track(account, uri.split(":")[-1])
+                info = await self.players.search.track_by_id(uri.split(":")[-1])
             elif not uri:
-                results = await self.auth.search(account, query, limit=1)
-                if not results:
+                info = await self.players.search.track(query)
+                if not info:
                     return await interaction.followup.send(f"Nothing found on Spotify for **{query}**.")
-                info = results[0]
                 uri = info["uri"]
 
             if current and self.is_active(guild_id) and not current.paused and uri.startswith("spotify:track:"):
-                await current.call("/player/add_to_queue", {"uri": uri})
-                return await interaction.followup.send(f"Queued: **{info['name']}** - {info['artists']}")
+                await current.send("add_to_queue", uri=uri)
+                name = f"**{info['name']}** - {info['artists']}" if info else "the song"
+                return await interaction.followup.send(f"Queued {name}.")
 
-            session = await self.sessions.ensure(guild_id, account)
+            session = await self.players.ensure(guild_id, account)
             session.on_event = self._on_event
             self._attach_audio(guild_id, vc, session)
             await session.play(uri)
@@ -273,100 +247,77 @@ class SpotifyCog(commands.Cog):
             return await interaction.followup.send("Spotify couldn't play that. Try again.")
 
         if info:
-            await interaction.followup.send(f"Now playing from Spotify: **{info['name']}** - {info['artists']}")
+            await interaction.followup.send(f"Playing from Spotify: **{info['name']}** - {info['artists']}")
         else:
-            await interaction.followup.send(f"Now playing this Spotify {uri.split(':')[1]}.")
+            await interaction.followup.send(f"Playing this Spotify {uri.split(':')[1]}.")
 
     async def control(self, guild_id: int, action: str, seconds: float = 0) -> str:
-        """pause / resume / next / prev / seek / stop for the Spotify player here."""
-        s = self.sessions.get(guild_id)
+        s = self.players.get(guild_id)
         vc = self._voice_client(guild_id)
         if not s:
             return "Spotify isn't playing."
         try:
             if action == "pause":
-                await s.call("/player/pause")
+                await s.send("pause")
+                s.paused = True
                 if vc and vc.is_playing():
                     vc.pause()
                 return "Paused."
             if action == "resume":
-                await s.call("/player/resume")
+                await s.send("play")
+                s.paused = False
                 if vc and vc.is_paused():
                     vc.resume()
                 return "Resumed."
             if action == "next":
-                await s.call("/player/next")
+                await s.send("skip_next")
                 if vc and vc.is_paused():
                     vc.resume()
                 return "Skipped to the next song."
             if action == "prev":
-                await s.call("/player/prev")
+                await s.send("skip_prev")
                 if vc and vc.is_paused():
                     vc.resume()
                 return "Playing the previous song."
             if action == "seek":
-                await s.call("/player/seek", {"position": int(seconds * 1000), "relative": True})
+                pos = max(0, s.current_position() + int(seconds * 1000))
+                await s.send("seek", position_ms=pos)
+                s.position_ms, s.position_at = pos, time.time()
                 return f"Moved {'forward' if seconds > 0 else 'back'} {abs(int(seconds))} seconds."
             if action == "stop":
                 src = self._sources.pop(guild_id, None)
+                self._clear_now_playing(guild_id)
                 if vc and src is not None and vc.source is src:
                     vc.stop()
-                await self.sessions.stop(guild_id)
+                await self.players.stop(guild_id)
                 return "Stopped."
         except SpotifyError as e:
             return str(e)
         return "Unknown action."
 
-    async def link_player(self, interaction: discord.Interaction):
-        """Step 2: link the audio player once via spotify.com/pair."""
-        async def on_url(url: str):
-            await interaction.followup.send(
-                "**Last step: link the player** (one time).\n"
-                f"1. Open {url}\n"
-                "2. Log in with the **same** Spotify account if asked, and approve.\n"
-                "I'll wait up to 10 minutes.",
-                ephemeral=True, suppress_embeds=True,
-            )
-        try:
-            await self.sessions.pair(interaction.user.id, on_url)
-        except SpotifyError as e:
-            return await interaction.followup.send(str(e), ephemeral=True)
-        except Exception:
-            logger.exception("Spotify player linking failed")
-            return await interaction.followup.send("Linking failed. Run `/spotify login` to try again.", ephemeral=True)
-        await interaction.followup.send(
-            "Spotify is ready. Choose **Spotify** in `/provider`, then use `/play` as usual.", ephemeral=True
-        )
-
     # ----------------------------------------------------------- commands ---
 
     @spotify.command(name="login", description="Connect your Spotify Premium account (one time)")
     async def login_cmd(self, interaction: discord.Interaction):
-        if not find_librespot():
+        if not find_soloist():
             return await interaction.response.send_message(
                 "Spotify playback isn't installed on this bot's server yet. Ask the bot owner.", ephemeral=True
             )
-        data = self.store.get(interaction.user.id)
-        if data and self.sessions.is_paired(interaction.user.id):
+        if self.logged_in(interaction.user.id):
             return await interaction.response.send_message(
-                f"You're already connected as **{data.get('display_name', 'your account')}**. "
-                "Choose **Spotify** in `/provider` and use `/play`. To switch accounts, use `/spotify logout` first.",
+                "You're already connected. Choose **Spotify** in `/provider` and use `/play`. "
+                "To use a different account, run `/spotify logout` first.",
                 ephemeral=True,
             )
-        if data:
-            # Step 1 is done; only the player still needs linking.
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            return await self.link_player(interaction)
-        await interaction.response.send_message(LOGIN_TEXT, view=LoginView(self), ephemeral=True,
-                                                suppress_embeds=True)
+        await interaction.response.send_message(LOGIN_TEXT, view=LoginView(self), ephemeral=True)
 
     @spotify.command(name="logout", description="Remove your Spotify login from this bot")
     async def logout_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
-        for gid, s in list(self.sessions.by_guild.items()):
+        for gid, s in list(self.players.by_guild.items()):
             if s.user_id == interaction.user.id:
                 await self.control(gid, "stop")
-        removed = self.auth.forget(interaction.user.id)
+        removed = self.players.forget(interaction.user.id)
         await interaction.followup.send(
             "Your Spotify login was deleted from this bot." if removed else "You weren't logged in.",
             ephemeral=True,
