@@ -420,6 +420,10 @@ class SoloistManager:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
             raise SpotifyError("Login wasn't finished in time. Run `/spotify login` again.")
+        except asyncio.CancelledError:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            raise
         finally:
             await asyncio.sleep(0.2)
             read_task.cancel()
@@ -436,6 +440,50 @@ class SoloistManager:
         data = self.store.get(user_id) or {}
         data["soloist_key"] = key.strip()
         self.store.put(user_id, data)
+
+    async def login_with_code(self, user_id: int, key: str, on_code) -> None:
+        """Pairing-code login, all on this server.
+
+        on_code(url, user_code) is awaited once with Spotify's pairing link.
+        """
+        from . import spotify_pairing as sp
+
+        if not find_soloist():
+            raise SpotifyError("Spotify playback isn't installed on this bot's server yet.")
+        code = await sp.start_code()
+        await on_code(code["verification_uri_complete"], code["user_code"])
+        token = await sp.wait_for_token(code)
+        me = await sp.account(token)
+        username = me.get("id") or ""
+
+        port_found: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        def on_line(text: str) -> None:
+            m = re.search(r"ZeroConf service on port (\d+)", text)
+            if m and not port_found.done():
+                port_found.set_result(int(m.group(1)))
+
+        async def no_step(text, url):
+            return None
+
+        pairing = asyncio.create_task(self.login(user_id, key, no_step, on_line=on_line, fresh=True))
+        try:
+            done, _ = await asyncio.wait({pairing, port_found}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+            if pairing in done:
+                pairing.result()  # raises the pairing error
+            if not port_found.done():
+                raise SpotifyError("Spotify's player didn't start on the server. Try again.")
+            await asyncio.sleep(0.5)
+            await sp.add_user(port_found.result(), username, token)
+            await asyncio.wait_for(asyncio.shield(pairing), 45)
+        except asyncio.TimeoutError:
+            raise SpotifyError("Spotify's player didn't finish the login. Run `/spotify login` again.")
+        finally:
+            if not pairing.done():
+                pairing.cancel()
+                with contextlib.suppress(BaseException):
+                    await pairing
+        await self.verify_and_save(user_id, key)
 
     async def login_with_pairing_file(self, user_id: int, key: str, zip_bytes: bytes) -> None:
         """Use a login paired on the user's own PC (spotify_pair.bat output)."""
