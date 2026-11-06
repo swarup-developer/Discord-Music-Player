@@ -139,7 +139,7 @@ bot_pids() {{
 show_procs() {{
   local pids; pids=$(bot_pids | tr '\\n' ',' | sed 's/,$//')
   if [ -n "$pids" ]; then
-    ps -o rss=,args= -p "$pids" | awk '{{mb=$1/1024; $1=""; n=$0; if (n ~ /dc\.py/) n="Discord bot"; else if (n ~ /server\.mjs/) n="YouTube resolver"; else if (n ~ /cookie_refresher/) n="Cookie refresher"; else if (n ~ /bgutil/) n="PO token server"; else if (n ~ /ffmpeg/) n="FFmpeg stream"; else if (n ~ /chrom|headless/) n="Chromium"; printf "  %s, %d MB\\n", n, mb}}'
+    ps -o rss=,args= -p "$pids" | awk '{{mb=$1/1024; $1=""; n=$0; if (n ~ /dc[.]py/) n="Discord bot"; else if (n ~ /server[.]mjs/) n="YouTube resolver"; else if (n ~ /cookie_refresher/) n="Cookie refresher"; else if (n ~ /bgutil/) n="PO token server"; else if (n ~ /ffmpeg/) n="FFmpeg stream"; else if (n ~ /chrom|headless/) n="Chromium"; printf "  %s, %d MB\\n", n, mb}}'
   else
     echo "  none"
   fi
@@ -153,7 +153,10 @@ def script_status(cfg: dict) -> str:
 echo "Services:"
 supervisorctl status 2>/dev/null | grep -E "dcbot|bgutil" | awk '{n=$1; if(n=="dcbot")n="Discord bot"; else if(n=="dcbot-ytjs")n="YouTube resolver"; else if(n=="bgutil-pot")n="PO token server"; printf "  %s: %s\\n", n, tolower($2)}' || echo "  supervisor not found"
 printf "  Cookie timer: %s\\n" "$(systemctl is-active dcbot-cookies.timer 2>/dev/null)"
-command -v warp-cli >/dev/null && printf "  WARP: %s\\n" "$(warp-cli --accept-tos status 2>/dev/null | head -1 | sed 's/^Status update: //' | tr 'A-Z' 'a-z')"
+if command -v warp-cli >/dev/null; then
+  w=$(warp-cli --accept-tos status 2>/dev/null | head -1 | sed 's/^Status update: //' | tr 'A-Z' 'a-z')
+  printf "  WARP: %s\\n" "${w:-stopped}"
+fi
 echo "Bot processes:"
 show_procs
 mem
