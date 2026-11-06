@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
+## [2026-11-06] - Real Spotify playback (Premium)
+
+### Added
+
+- `/spotify`: play songs, albums and playlists straight from Spotify with
+  your own Spotify Premium account. No YouTube involved. Commands: `setup`,
+  `play`, `queue`, `pause`, `resume`, `skip`, `previous`, `now`, `volume`,
+  `stop`, `logout`.
+- `/spotify setup` walks you through creating your own Spotify app and
+  logging in once. Logins are stored encrypted and removed with
+  `/spotify logout`.
+- The bot shows up as "Discord Music Bot" in your Spotify devices, so you can
+  also pause or skip from the Spotify app.
+
+### Changed
+
+- Spotify links in `/play` now point to `/spotify play`, and Spotify is no
+  longer a `/provider` option (it used to look songs up on YouTube).
+
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 
 ### Added

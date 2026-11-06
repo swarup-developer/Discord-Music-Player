@@ -8,6 +8,7 @@ from .config import BOT_SYNC_GUILD_ID, INWORLD_API_KEY, INWORLD_STT_MODEL_ID, IN
 from .cogs_control import ControlCog
 from .cogs_help import HelpCog
 from .cogs_music import MusicCog
+from .cogs_spotify import SpotifyCog
 from .opus_bootstrap import ensure_opus_loaded
 from .state import BotState
 from .youtube import check_pot_provider, check_youtube_cookies, check_ytjs_resolver
@@ -32,6 +33,7 @@ class Bot(commands.Bot):
         await self.add_cog(HelpCog(self))
         await self.add_cog(ControlCog(self))
         await self.add_cog(MusicCog(self))
+        await self.add_cog(SpotifyCog(self))
 
         # Move startup objects out of GC tracking. A forced full gc.collect()
         # walked every object (much of it in swap on the 1GB server) and froze

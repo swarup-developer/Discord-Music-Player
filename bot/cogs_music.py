@@ -192,7 +192,6 @@ class ProviderSelectionView(discord.ui.View):
         ("ytmusic", "YouTube Music", "🎶"),
         ("jiosaavn", "JioSaavn", "🎵"),
         ("soundcloud", "SoundCloud", "🧡"),
-        ("spotify", "Spotify", "🟢"),
         ("local", "Local Files", "📁"),
     ]
 
@@ -1807,7 +1806,12 @@ class MusicCog(commands.Cog):
             return await interaction.followup.send(
                 "This bot is already active in another server. Leave that server's voice channel first."
             )
-        if (song.startswith("http://") or song.startswith("https://")) and not SpotifyHandler.is_spotify_url(song):
+        if SpotifyHandler.is_spotify_url(song):
+            return await interaction.followup.send(
+                "Spotify links play straight from Spotify with `/spotify play` (needs Spotify Premium; "
+                "set it up once with `/spotify setup`)."
+            )
+        if song.startswith("http://") or song.startswith("https://"):
             return await interaction.followup.send("Please use the `/url` command to play direct links!")
         await self._resolve_and_play(song, interaction)
 
@@ -1880,7 +1884,7 @@ class MusicCog(commands.Cog):
             view=self.SearchResultsView(self, interaction, results),
         )
 
-    @discord.app_commands.command(name="provider", description="Set the default music provider (YouTube / JioSaavn / SoundCloud / Spotify / Local Files)")
+    @discord.app_commands.command(name="provider", description="Set the default music provider (YouTube / JioSaavn / SoundCloud / Local Files)")
     async def provider_cmd(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("Server only.", ephemeral=True)

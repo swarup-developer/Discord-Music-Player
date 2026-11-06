@@ -59,6 +59,28 @@ else
   echo "--> Deno already installed ($(deno --version | head -n 1))"
 fi
 
+# 4b. go-librespot: the Spotify Connect player behind /spotify (Premium only).
+#     Prebuilt release binary into ~/go-librespot; nothing runs until a user
+#     plays Spotify. Set GO_LIBRESPOT_VERSION to pin another release.
+echo "--> Installing go-librespot (Spotify playback)..."
+apt-get install -y libasound2t64 libogg0 libvorbisfile3 libflac12t64 >/dev/null 2>&1 \
+  || apt-get install -y libasound2 libogg0 libvorbisfile3 >/dev/null 2>&1 || true
+GLR_VERSION="${GO_LIBRESPOT_VERSION:-v0.10.5}"
+case "$(uname -m)" in
+  x86_64) GLR_ARCH="x86_64" ;;
+  aarch64|arm64) GLR_ARCH="arm64" ;;
+  *) GLR_ARCH="" ;;
+esac
+if [ -n "$GLR_ARCH" ]; then
+  sudo -u "$USER_NAME" mkdir -p "$USER_HOME/go-librespot"
+  curl -fsSL "https://github.com/devgianlu/go-librespot/releases/download/${GLR_VERSION}/go-librespot_linux_${GLR_ARCH}.tar.gz" \
+    | sudo -u "$USER_NAME" tar xz -C "$USER_HOME/go-librespot" \
+    && echo "go-librespot ${GLR_VERSION} installed in $USER_HOME/go-librespot" \
+    || echo "Warning: could not install go-librespot; /spotify will be unavailable."
+else
+  echo "Warning: no go-librespot build for $(uname -m); /spotify will be unavailable."
+fi
+
 # 5. Set up Proof-of-Origin Token (POT) server backend
 echo "--> Deploying POT Server (bgutil-ytdlp-pot-provider)..."
 cd "$USER_HOME"

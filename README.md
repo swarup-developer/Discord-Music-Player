@@ -1,6 +1,6 @@
 # Discord Music Player
 
-A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCloud and Spotify links, live TV audio, internet radio, and audio files from your own device, with an accessible button controller and audio filters. It runs on a Linux server or a Windows PC.
+A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCloud, Spotify (with your own Premium account), live TV audio, internet radio, and audio files from your own device, with an accessible button controller and audio filters. It runs on a Linux server or a Windows PC.
 
 > **Disclaimer:** This is a personal, open-source project with no affiliation with Google (YouTube), Spotify, JioSaavn or any other service. It is intended for personal and educational use. Please use it responsibly.
 
@@ -13,6 +13,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 - [Hosting on Windows](#hosting-on-windows)
 - [YouTube on a server: WARP and automatic cookies](#youtube-on-a-server-warp-and-automatic-cookies)
 - [Commands](#commands)
+- [Spotify (Premium)](#spotify-premium)
 - [Live TV and radio sources](#live-tv-and-radio-sources)
 - [Configuration](#configuration)
 - [How YouTube playback works](#how-youtube-playback-works)
@@ -22,7 +23,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 
 - **Fast playback.** A local YouTube resolver keeps one session open, so a song usually starts within 1 to 3 seconds.
 - **YouTube Music search.** Searches return official songs rather than music videos.
-- **Spotify links without an account.** Track, album and playlist links are matched and played through YouTube Music.
+- **Real Spotify playback.** Users with Spotify Premium connect their own account and play songs, albums and playlists straight from Spotify with `/spotify`. No YouTube involved.
 - **Accurate JioSaavn results.** The original song comes first. Re-uploads are merged, and covers or lofi versions only appear when you ask for them.
 - **No manual cookies on a server.** YouTube traffic goes through Cloudflare WARP, and a background service keeps cookies fresh automatically.
 - **Live now-playing card.** The controller shows album art, who requested the song and a progress bar that moves as the song plays.
@@ -130,7 +131,7 @@ Type `/` in Discord to see all commands. Use `/join` first so the bot is in your
 | `/play <song>` | Play a song by name or link, or add it to the queue |
 | `/search <query>` | Search on the current provider and pick a result |
 | `/url <link>` | Play a YouTube link or a direct audio stream |
-| `/provider` | Choose the default source: YouTube Music, JioSaavn, SoundCloud, Spotify or Local Files |
+| `/provider` | Choose the default source: YouTube Music, JioSaavn, SoundCloud or Local Files |
 | `/lyrics [song]` | Show lyrics for the current or a given song |
 
 ### Playback and queue
@@ -175,6 +176,40 @@ Uploaded files are streamed from Discord and are never stored on the server. To 
 | `/radio search <name or genre>` | Find stations by name or genre |
 | `/radio play <url>` | Play any radio stream URL |
 
+## Spotify (Premium)
+
+`/spotify` plays music straight from Spotify, using the listener's own Spotify
+Premium account. Nothing goes through YouTube. Free Spotify accounts can't use
+it (Spotify requires Premium for this); everyone can still use `/play`.
+
+**One-time setup for each user (about 3 minutes):**
+
+1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and log in with your Premium account.
+2. Click **Create app**. Name and description can be anything.
+3. Add the Redirect URI `http://127.0.0.1:8888/callback` exactly.
+4. Tick **Web API**, accept the terms and save.
+5. Open **Settings** and copy the **Client ID**. No Client Secret is needed.
+6. In Discord run `/spotify setup`, press **Enter Client ID** and paste it.
+7. Press **Log in with Spotify** and agree. The browser then shows a page that
+   "can't be reached"; that's expected. Copy the whole address from the
+   address bar, press **Paste the address** and paste it.
+
+**Commands:** `/spotify play <song or link>`, `/spotify queue`, `pause`,
+`resume`, `skip`, `previous`, `now`, `volume`, `stop`, `logout`. Use `/join`
+first. Links to Spotify tracks, albums and playlists work.
+
+**How it works:** the bot starts [go-librespot](https://github.com/devgianlu/go-librespot),
+an open-source Spotify Connect player, logged in as the user who started
+Spotify, and streams its audio into the voice channel. It appears as
+"Discord Music Bot" in that user's Spotify devices, so they can also control it
+from the Spotify app. It starts only when someone plays Spotify and stops after
+5 idle minutes. Logins are stored encrypted on the server and deleted with
+`/spotify logout`. `setup.sh` installs go-librespot.
+
+**Please note:** go-librespot is an unofficial client, and playing Spotify
+into a voice channel for others is not allowed by Spotify's terms. Each user
+uses it at their own risk to their own account.
+
 ## Live TV and radio sources
 
 - **TV** channels come from the public [iptv-org](https://github.com/iptv-org/iptv) directory. The bot checks every stream in the background every 12 hours and hides channels that are offline. Paid channels without a free public stream are not available.
@@ -200,7 +235,7 @@ Python dependencies are listed in `requirements.txt` and `pyproject.toml`. Node.
 2. **Stream.** The resolver returns a playable audio link. Each link is checked before use, so a stream that would stop after a second is never played.
 3. **Fallback.** If the resolver fails, the bot uses yt-dlp with the PO token provider. This is slower, about 5 seconds per song.
 
-Spotify links are read from Spotify's public page, and each track is matched on YouTube Music. Spotify's own audio is copy-protected and cannot be streamed by any bot, with or without Premium.
+Spotify is separate from YouTube: see [Spotify (Premium)](#spotify-premium).
 
 ## Troubleshooting
 
