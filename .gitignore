@@ -47,3 +47,4 @@ botctl.json
 spotify_sessions/
 bin/
 spotify-helper/target/
+ttspotify-rs/
