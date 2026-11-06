@@ -277,8 +277,9 @@ class SoloistSession:
         etype = msg.get("event") or msg.get("type") or ""
         data = msg.get("data") if isinstance(msg.get("data"), dict) else msg
         flat = json.dumps(data).lower()
-        if "logged_in" in flat or "authenticated" in flat:
-            self.ready.set()
+        if any(w in flat for w in ('"logged_in": true', '"logged_in"', "authenticated", '"state": "logged', "loggedin")):
+            if '"logged_in": false' not in flat and "not_logged" not in flat and "logged_out" not in flat:
+                self.ready.set()
         track = data.get("track") if isinstance(data.get("track"), dict) else None
         if etype in ("track_changed",) or track:
             t = track or data
@@ -427,6 +428,59 @@ class SoloistManager:
                 raise SpotifyError("The Spotify player on this server is out of date. Ask the bot owner to update Soloist.")
             logger.error("Soloist pairing failed (rc=%s):\n%s", rc, "\n".join(tail[-20:]))
             raise SpotifyError("Spotify login didn't finish. Run `/spotify login` and try again.")
+        data = self.store.get(user_id) or {}
+        data["soloist_key"] = key.strip()
+        self.store.put(user_id, data)
+
+    async def login_with_pairing_file(self, user_id: int, key: str, zip_bytes: bytes) -> None:
+        """Use a login paired on the user's own PC (spotify_pair.bat output)."""
+        import io
+        import zipfile
+
+        binary = find_soloist()
+        if not binary:
+            raise SpotifyError("Spotify playback isn't installed on this bot's server yet.")
+        await self.stop_user(user_id)
+        target = SESSIONS_DIR / f"soloist-{user_id}"
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(target, 0o700)
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                total = 0
+                for info in zf.infolist():
+                    name = info.filename.replace("\\", "/")
+                    parts = [p for p in name.split("/") if p not in ("", ".")]
+                    if not parts or ".." in parts or info.is_dir():
+                        continue
+                    if parts[0].lower() in ("cache", "crashpad") or parts[-1] in ("soloist.pid", "ws.addr", "ws.port"):
+                        continue
+                    total += info.file_size
+                    if total > 20 * 1024 * 1024:
+                        raise SpotifyError("That file is too big to be a Spotify login.")
+                    dest = target.joinpath(*parts)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(zf.read(info))
+        except zipfile.BadZipFile:
+            raise SpotifyError("That isn't the spotify-login.zip file from the pairing helper.")
+
+        # Check it really logs in here before saving anything.
+        session = SoloistSession(user_id, 0, self._free_port())
+        self._busy_ports.add(session.port)
+        try:
+            await session.start(binary, key.strip())
+            try:
+                await asyncio.wait_for(session.ready.wait(), 25)
+            except asyncio.TimeoutError:
+                logger.error("Pairing file did not log in. Log:\n%s", _redact("\n".join(session._log_tail[-25:])))
+                raise SpotifyError(
+                    "The login from that file didn't work on the bot's server. "
+                    "Run the pairing helper again and upload the new file."
+                )
+        finally:
+            self._busy_ports.discard(session.port)
+            await session.stop()
         data = self.store.get(user_id) or {}
         data["soloist_key"] = key.strip()
         self.store.put(user_id, data)

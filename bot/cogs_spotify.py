@@ -34,12 +34,17 @@ logger = logging.getLogger(__name__)
 # FFmpeg (started by discord.py) records from the bot's private PulseAudio.
 os.environ.setdefault("PULSE_SERVER", PULSE_SERVER)
 
+PAIR_HELPER = "https://github.com/swarup-developer/Discord-Music-Player/raw/main/spotify_pair.bat"
+
 LOGIN_TEXT = (
     "**Connect Spotify (Premium)**\n"
-    "1. Press **Get your key** and log in with your Spotify Premium account. "
-    "Create a key there and copy it (it starts with `spak_`).\n"
-    "2. Press **Paste key** and paste it.\n\n"
-    "That's all. Your key is stored encrypted and removed with `/spotify logout`."
+    "1. Press **Get your key**, log in with your Spotify Premium account, create a key and copy it "
+    "(it starts with `spak_`).\n"
+    "2. Press **Pairing helper** and run it on your Windows PC. Paste the key when it asks, then pick "
+    "**Discord Music Bot** in your Spotify app. It makes a file called `spotify-login.zip`.\n"
+    "3. Run `/spotify login` again, attach that file in the **pairing_file** box, and paste the key once more.\n\n"
+    "Spotify only allows pairing from the same Wi-Fi, which is why step 2 runs on your PC. "
+    "Your key is stored encrypted and removed with `/spotify logout`."
 )
 
 
@@ -47,9 +52,10 @@ class KeyModal(discord.ui.Modal, title="Paste your Spotify key"):
     key = discord.ui.TextInput(label="Key (starts with spak_)", min_length=20, max_length=200,
                                placeholder="spak_...")
 
-    def __init__(self, cog: "SpotifyCog"):
+    def __init__(self, cog: "SpotifyCog", pairing_zip: Optional[bytes] = None):
         super().__init__(timeout=900)
         self.cog = cog
+        self.pairing_zip = pairing_zip
 
     async def on_submit(self, interaction: discord.Interaction):
         key = self.key.value.strip()
@@ -59,6 +65,18 @@ class KeyModal(discord.ui.Modal, title="Paste your Spotify key"):
                 ephemeral=True,
             )
         await interaction.response.send_message("Connecting to Spotify, one moment.", ephemeral=True)
+
+        if self.pairing_zip is not None:
+            try:
+                await self.cog.players.login_with_pairing_file(interaction.user.id, key, self.pairing_zip)
+            except SpotifyError as e:
+                return await interaction.followup.send(str(e), ephemeral=True)
+            except Exception:
+                logger.exception("Spotify login with pairing file failed")
+                return await interaction.followup.send("Spotify login failed. Try again.", ephemeral=True)
+            return await interaction.followup.send(
+                "Spotify is connected. Choose **Spotify** in `/provider`, then use `/play` as usual.", ephemeral=True
+            )
 
         async def on_step(text: str, url: str):
             view = discord.ui.View(timeout=600)
@@ -86,10 +104,18 @@ class LoginView(discord.ui.View):
         super().__init__(timeout=900)
         self.cog = cog
         self.add_item(discord.ui.Button(label="Get your key", url=KEY_PAGE))
+        self.add_item(discord.ui.Button(label="Pairing helper", url=PAIR_HELPER))
+
+
+class PasteKeyView(discord.ui.View):
+    def __init__(self, cog: "SpotifyCog", pairing_zip: bytes):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.pairing_zip = pairing_zip
 
     @discord.ui.button(label="Paste key", style=discord.ButtonStyle.primary)
     async def paste(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(KeyModal(self.cog))
+        await interaction.response.send_modal(KeyModal(self.cog, self.pairing_zip))
 
 
 class SpotifyCog(commands.Cog):
@@ -298,7 +324,8 @@ class SpotifyCog(commands.Cog):
     # ----------------------------------------------------------- commands ---
 
     @spotify.command(name="login", description="Connect your Spotify Premium account (one time)")
-    async def login_cmd(self, interaction: discord.Interaction):
+    @app_commands.describe(pairing_file="The spotify-login.zip file made by the pairing helper")
+    async def login_cmd(self, interaction: discord.Interaction, pairing_file: Optional[discord.Attachment] = None):
         if not find_soloist():
             return await interaction.response.send_message(
                 "Spotify playback isn't installed on this bot's server yet. Ask the bot owner.", ephemeral=True
@@ -308,6 +335,16 @@ class SpotifyCog(commands.Cog):
                 "You're already connected. Choose **Spotify** in `/provider` and use `/play`. "
                 "To use a different account, run `/spotify logout` first.",
                 ephemeral=True,
+            )
+        if pairing_file is not None:
+            if not pairing_file.filename.lower().endswith(".zip") or pairing_file.size > 20 * 1024 * 1024:
+                return await interaction.response.send_message(
+                    "Attach the `spotify-login.zip` file made by the pairing helper.", ephemeral=True
+                )
+            data = await pairing_file.read()
+            return await interaction.response.send_message(
+                "Got your pairing file. Press **Paste key** and paste the same key you used in the helper.",
+                view=PasteKeyView(self, data), ephemeral=True,
             )
         await interaction.response.send_message(LOGIN_TEXT, view=LoginView(self), ephemeral=True)
 
