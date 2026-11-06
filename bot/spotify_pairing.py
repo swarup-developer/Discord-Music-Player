@@ -86,14 +86,27 @@ async def wait_for_token(code: dict) -> str:
 
 
 async def account(token: str) -> dict:
+    """The user's Spotify account, or {} if Spotify is rate limiting.
+
+    The account name is optional for the Connect login, so a busy Spotify
+    API (429) must not stop the login.
+    """
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get("https://api.spotify.com/v1/me", headers={"Authorization": f"Bearer {token}"})
-    if r.status_code != 200:
-        raise SpotifyError(f"Couldn't read your Spotify account ({r.status_code}). Try again.")
-    me = r.json()
-    if me.get("product") and me["product"] != "premium":
-        raise PremiumRequired()
-    return me
+        for attempt in range(3):
+            r = await client.get("https://api.spotify.com/v1/me", headers={"Authorization": f"Bearer {token}"})
+            if r.status_code == 200:
+                me = r.json()
+                if me.get("product") and me["product"] != "premium":
+                    raise PremiumRequired()
+                return me
+            if r.status_code != 429:
+                break
+            try:
+                wait = min(float(r.headers.get("Retry-After", "2")), 8)
+            except ValueError:
+                wait = 2
+            await asyncio.sleep(wait)
+    return {}
 
 
 # ---------------------------------------------------------- Connect login --
