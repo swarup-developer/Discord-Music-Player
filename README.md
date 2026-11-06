@@ -9,6 +9,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 - [Features](#features)
 - [Create the Discord bot](#create-the-discord-bot)
 - [Hosting on Linux](#hosting-on-linux)
+- [Start and stop the bot from your computer](#start-and-stop-the-bot-from-your-computer)
 - [Hosting on Windows](#hosting-on-windows)
 - [YouTube on a server: WARP and automatic cookies](#youtube-on-a-server-warp-and-automatic-cookies)
 - [Commands](#commands)
@@ -73,6 +74,26 @@ Useful service commands:
 | `warp-cli --accept-tos status` | Check Cloudflare WARP |
 
 To update an existing installation, pull the latest code and run `sudo bash setup.sh` again.
+
+## Start and stop the bot from your computer
+
+`botctl.py` controls the bot on your server over SSH, so you don't have to log
+in. On Windows, double-click `botctl.bat`; elsewhere run `python botctl.py`.
+
+The first run asks for your server IP or domain, SSH user, SSH key or
+password, and the bot folder. They are saved to `botctl.json`, which is in
+`.gitignore`; passwords are never saved.
+
+| Command | What it does |
+|---|---|
+| `start` | Starts WARP, the YouTube resolver, the bot and the cookie timer, then waits until the bot is logged in. |
+| `stop` | Stops the whole bot stack: bot, resolver, PO token server, cookie refresher, its Chromium, FFmpeg streams and (optionally) WARP. Then it scans for anything bot-related still running, ends it and shows the server's free RAM. Other apps on the server are not touched. |
+| `restart` | `stop`, then `start`. |
+| `status` | Services, bot processes with their memory, and server RAM. |
+| `logs` | The last lines of the bot log and recent errors. |
+| `setup` | Change the saved server details. |
+
+Example: `python botctl.py stop`. With no command it shows a menu.
 
 ## Hosting on Windows
 
