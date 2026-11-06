@@ -288,7 +288,11 @@ class MusicCog(commands.Cog):
         self.voice_lock = asyncio.Lock()
         self.empty_voice_tasks: dict[int, asyncio.Task] = {}
         self.voice_join_cooldowns: dict[int, float] = {}
+        self._yt_retry: dict[int, tuple[str, float]] = {}
 
+        IPTVManager.is_busy = staticmethod(
+            lambda: any(vc.is_playing() for vc in self.bot.voice_clients)
+        )
         # Load IPTV channels and keep probing their streams in the background,
         # so dead channels are hidden from /tv.
         asyncio.create_task(IPTVManager.health_loop())
@@ -804,6 +808,9 @@ class MusicCog(commands.Cog):
 
             if error:
                 logger.error(f"Playback error: {error}")
+            played_for = session.elapsed()
+            cache = session.stream_cache or {}
+            was_youtube = "googlevideo.com" in str(cache.get("input") or "")
             if session.stats_counting:
                 self.state.add_listen_seconds(guild_id, session.elapsed())
                 session.stats_counting = False
@@ -829,6 +836,22 @@ class MusicCog(commands.Cog):
                         session.history.pop(0)
                 session.current_song_data = None
 
+            # A YouTube stream that dies within seconds is almost always a 403:
+            # the WARP exit IP changed, so the URL bound to the old IP is
+            # rejected. Resolve it again once instead of skipping the song.
+            if (
+                session.advance_queue_on_stop
+                and not session.skip_requested
+                and was_youtube
+                and old_data
+                and played_for < 5.0
+                and self._should_retry_youtube(guild_id, old_data)
+            ):
+                logger.warning("YouTube stream ended after %.1fs; re-resolving %r once", played_for, old_data.get("title"))
+                session.advance_queue_on_stop = True
+                YouTubeHandler.invalidate_stream(stream_url=cache.get("input"))
+                asyncio.run_coroutine_threadsafe(self._retry_track(guild_id, old_data), self.bot.loop)
+                return
             if session.advance_queue_on_stop:
                 asyncio.run_coroutine_threadsafe(self._play_next_in_queue(guild_id, old_data), self.bot.loop)
             session.advance_queue_on_stop = True
@@ -837,6 +860,63 @@ class MusicCog(commands.Cog):
             # and stalled the event loop at the end of every track.
 
         return after_playback
+
+    def _should_retry_youtube(self, guild_id: int, data: dict) -> bool:
+        key = str(data.get("title") or "")
+        last = self._yt_retry.get(guild_id)
+        if last and last[0] == key and time.time() - last[1] < 120:
+            return False
+        self._yt_retry[guild_id] = (key, time.time())
+        return True
+
+    async def _retry_track(self, guild_id: int, data: dict) -> None:
+        guild = self.bot.get_guild(guild_id)
+        session = self._session(guild_id)
+        if not guild or session.linked_text_channel_id is None:
+            return
+        channel = guild.get_channel(session.linked_text_channel_id)
+        if channel is None:
+            return
+
+        class _Followup:
+            async def send(self, content=None, **kwargs):
+                kwargs.pop("ephemeral", None)
+                return await channel.send(content=content, **kwargs)
+
+        proxy = type("ProxyInteraction", (), {})()
+        proxy.guild = guild
+        proxy.followup = _Followup()
+        if session.history and session.history[-1] == data:
+            session.history.pop()
+        try:
+            if data.get("type") == "song":
+                await self._play_song_data(data["song"], proxy)
+            else:
+                await self._play_audio(data.get("query"), proxy, title=data.get("title"))
+        except Exception as e:
+            logger.error(f"YouTube retry failed: {e}")
+            await self._play_next_in_queue(guild_id, data)
+
+    async def _safe_reply(self, interaction: discord.Interaction, message: str) -> None:
+        """Reply even when the interaction already expired.
+
+        If the event loop was slow and the 3s defer window passed, followup
+        raises 404 Unknown interaction. That used to land in the join error
+        handler and wipe the voice state of a connection that had succeeded.
+        """
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+        try:
+            if interaction.channel:
+                await interaction.channel.send(message, delete_after=20)
+        except Exception:
+            pass
 
     def _save_stats_soon(self) -> None:
         payload = self.state.stats_snapshot()
@@ -913,7 +993,32 @@ class MusicCog(commands.Cog):
         session.is_playing = True
         session.current_song_title = title
         await self.refresh_controller(guild_id)
+        if seek_start is None:
+            self._prefetch_next(guild_id)
         return True
+
+    def _prefetch_next(self, guild_id: int) -> None:
+        """Resolve the next queued YouTube track while this one plays.
+
+        Without this every song only started resolving when its turn came,
+        so each track change waited 3-40s on the busy server.
+        """
+        queue = self.state.queue_for(guild_id)
+        if not queue:
+            return
+        item = queue[0]
+        provider = self.state.get_provider(guild_id)
+        if item.song_data:
+            if item.song_data.get("provider") not in ("youtube", "spotify"):
+                return
+            coro = YouTubeHandler.prefetch(song=item.song_data)
+        elif YouTubeHandler.is_youtube_url(item.query or ""):
+            coro = YouTubeHandler.prefetch(query=item.query)
+        elif provider in ("youtube", "ytmusic", "spotify") and not (item.query or "").startswith(("http://", "https://")):
+            coro = YouTubeHandler.prefetch(query=item.query, music=provider != "youtube")
+        else:
+            return
+        asyncio.create_task(coro)
 
     async def _get_audio_source_and_title(self, guild_id: int, query: str, volume: float, effects: Optional[list[str]], seek: Optional[float] = None, eq_preset: Optional[str] = None):
         if JioSaavnHandler.is_jiosaavn_url(query):
@@ -1172,6 +1277,8 @@ class MusicCog(commands.Cog):
         queue = self.state.queue_for(interaction.guild.id)
         if session.voice_client and session.voice_client.is_connected() and session.voice_client.is_playing():
             queue.append(QueueItem(query=query, requested_by=interaction.user.id))
+            if len(queue) == 1:
+                self._prefetch_next(interaction.guild.id)
             return await interaction.followup.send(f"Queued: **{query}**")
         if session.voice_client and session.voice_client.is_connected() and session.voice_client.is_paused():
             queue.appendleft(QueueItem(query=query, requested_by=interaction.user.id))
@@ -1539,6 +1646,8 @@ class MusicCog(commands.Cog):
                     # Keep the resolved song dict so the queue can replay the
                     # exact track later instead of re-searching a raw ID.
                     queue.append(QueueItem(query=song_query, title=song_title, requested_by=interaction.user.id, song_data=song))
+                    if len(queue) == 1:
+                        self._prefetch_next(interaction.guild.id)
                     return await interaction.followup.send(f"Queued: **{song_title}** (from Spotify track)")
                 else:
                     await self._play_song_data(song, interaction)
@@ -1911,14 +2020,14 @@ class MusicCog(commands.Cog):
             cooldown_remaining = self._voice_join_cooldown_remaining(guild_id)
             if cooldown_remaining > 0:
                 message = f"Voice join is cooling down after a failed handshake. Try again in {int(cooldown_remaining) + 1}s."
-                return await interaction.followup.send(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
 
             guild_vc = interaction.guild.voice_client
 
             if guild_vc and guild_vc.is_connected() and guild_vc.channel and guild_vc.channel.id == channel.id:
                 self.state.set_active(guild_vc, channel.id, interaction.channel_id, guild_id)
                 message = f"Connected to **{channel.name}**"
-                return await interaction.followup.send(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
             if guild_vc and guild_vc.is_connected():
                 try:
                     await guild_vc.disconnect(force=True)
@@ -1926,13 +2035,11 @@ class MusicCog(commands.Cog):
                     logger.warning(f"Failed to disconnect existing voice client cleanly: {e}")
 
             try:
-                vc = await channel.connect(self_deaf=True, timeout=20.0, reconnect=False)
+                vc = await channel.connect(self_deaf=True, timeout=30.0, reconnect=False)
                 self.state.set_active(vc, channel.id, interaction.channel_id, guild_id)
                 self.bot.loop.create_task(self._play_startup_sound(guild_id))
                 message = f"Connected to **{channel.name}**"
-                if interaction.response.is_done():
-                    return await interaction.followup.send(message, ephemeral=True)
-                return await interaction.response.send_message(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
 
             except discord.ConnectionClosed as e:
                 code = getattr(e, "code", None)
@@ -1948,20 +2055,20 @@ class MusicCog(commands.Cog):
                         "Could not join voice right now. Discord rejected the voice handshake (4017). "
                         "Wait a few seconds and try again."
                     )
-                    return await interaction.followup.send(message, ephemeral=True)
+                    return await self._safe_reply(interaction, message)
                 logger.error(f"Voice websocket closed during join, code={code}")
                 message = f"Could not join voice right now. Discord closed the voice websocket with code {code}."
-                return await interaction.followup.send(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
             except asyncio.TimeoutError:
                 self.state.clear(guild_id)
                 logger.warning(f"Voice connection timed out while joining guild {guild_id} channel {channel.id}")
                 message = "Could not join voice right now. The connection timed out."
-                return await interaction.followup.send(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
             except Exception as e:
                 self.state.clear(guild_id)
                 logger.error(f"Voice connection error while joining guild {guild_id} channel {channel.id}: {e}")
                 message = "Could not join voice right now. An unexpected voice connection error occurred."
-                return await interaction.followup.send(message, ephemeral=True)
+                return await self._safe_reply(interaction, message)
 
     # ==========================================
     # TV (IPTV) Stream Commands

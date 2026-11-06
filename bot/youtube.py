@@ -6,6 +6,8 @@ import re
 import shutil
 import socket
 import tempfile
+import time
+from urllib.parse import parse_qs, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Any
 
@@ -47,12 +49,39 @@ def build_http_before_options(http_headers: Optional[dict] = None) -> str:
 
 logger = logging.getLogger(__name__)
 
+# ---- speed caches ---------------------------------------------------------
+# Resolving a track costs 3s on a good run and 20-40s when the server is busy.
+# Resolved stream URLs stay valid for hours (their ``expire=`` parameter), so
+# keep them: replays, Prev, repeat and prefetched queue items start instantly.
+_STREAM_CACHE: dict[str, tuple[float, tuple]] = {}
+_STREAM_CACHE_MAX = 200
+_INFLIGHT: dict[str, "asyncio.Future"] = {}
+_SEARCH_CACHE: dict[tuple, tuple[float, list]] = {}
+_SEARCH_TTL = 60 * 60
+_SEARCH_CACHE_MAX = 300
+
+
+def _stream_expiry(stream_url: str) -> float:
+    """When to stop trusting a cached stream URL (30 min before it expires)."""
+    try:
+        exp = float(parse_qs(urlparse(stream_url).query).get("expire", [0])[0])
+    except (TypeError, ValueError):
+        exp = 0.0
+    if exp <= 0:
+        return time.time() + 2 * 60 * 60
+    return min(exp - 30 * 60, time.time() + 5 * 60 * 60)
+
+
+def _trim(cache: dict, limit: int) -> None:
+    while len(cache) > limit:
+        cache.pop(next(iter(cache)))
+
 # Safety-net cap for a single yt-dlp extraction. Start latency is decided by
 # the yt-dlp/fallback race in extract_stream_url_async, not by this value, so
 # it is deliberately generous: a cap tighter than yt-dlp's real latency just
 # guarantees the fallbacks win every time. Observed successful extractions have
 # taken ~8s when YouTube is throttling, so keep well clear of that.
-_YDL_EXTRACT_TIMEOUT = 45.0
+_YDL_EXTRACT_TIMEOUT = 75.0
 
 # Dedicated bounded pool for blocking yt-dlp calls. asyncio.wait_for cannot
 # cancel a thread that is already running, so timed-out extractions keep
@@ -70,8 +99,10 @@ YTJS_SERVER_HOST = "127.0.0.1"
 YTJS_SERVER_PORT = 4417
 # The resolver is now the primary path; keep this short so a hung resolver
 # hands over to yt-dlp quickly.
-YTJS_TIMEOUT = 15.0
-YTJS_SEARCH_TIMEOUT = 8.0
+# On the busy 1GB server the resolver has been measured at 20-30s when its
+# InnerTube session is rebuilt; 8s/15s made those requests fail for nothing.
+YTJS_TIMEOUT = 30.0
+YTJS_SEARCH_TIMEOUT = 25.0
 # Search YouTube Music songs (official audio) instead of regular videos.
 YTJS_MUSIC_SEARCH = os.getenv("YOUTUBE_MUSIC_SEARCH", "1") != "0"
 
@@ -236,11 +267,17 @@ YDL_OPTIONS = {
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',  # Bind to IPv4 to prevent IPv6 timeout issues
     'remote_components': ['ejs:github'],
-    'js_runtimes': {'node': {}},
+    # Do NOT pin js_runtimes to node: yt-dlp reports node as unavailable on the
+    # server, so pinning it disabled JS challenge solving entirely and every
+    # format came back missing ("Requested format is not available"). Left
+    # unset, yt-dlp uses deno (installed) or whichever runtime works.
+    # Do NOT force player_client either: android/web are SABR-only now. The
+    # yt-dlp defaults track whatever clients still return https formats.
     'extractor_args': {
-        'youtube': {
-            'player_client': ['android', 'web']
-        }
+        # Use only the bgutil HTTP server on :4416. The script provider spawns
+        # `node generate_once.js --version` on every extraction, which takes
+        # >15s on the busy server and aborted extraction with a timeout.
+        'youtubepot-bgutilscript': {'server_home': ['/nonexistent']},
     },
 }
 
@@ -414,15 +451,19 @@ class YouTubeHandler:
                     return []
                 
                 html = response.text
-                match = re.search(r"var ytInitialData\s*=\s*({.*?});", html)
-                if not match:
-                    match = re.search(r"window\[\"ytInitialData\"\]\s*=\s*({.*?});", html)
-                
-                if not match:
+
+                def _parse_initial_data(page: str):
+                    m = re.search(r"var ytInitialData\s*=\s*({.*?});</script>", page) \
+                        or re.search(r"var ytInitialData\s*=\s*({.*?});", page) \
+                        or re.search(r"window\[\"ytInitialData\"\]\s*=\s*({.*?});", page)
+                    return json.loads(m.group(1)) if m else None
+
+                # Regex + json.loads over a ~1MB page took seconds on the busy
+                # server and froze the event loop (Discord "not responding").
+                data = await asyncio.to_thread(_parse_initial_data, html)
+                if not data:
                     logger.warning("Failed to find ytInitialData in scrape search response")
                     return []
-                
-                data = json.loads(match.group(1))
                 results = []
                 
                 try:
@@ -488,6 +529,19 @@ class YouTubeHandler:
                 return []
             return await cls._ydl_search(query, limit)
 
+        key = (query.strip().lower(), limit, music)
+        hit = _SEARCH_CACHE.get(key)
+        if hit and time.time() - hit[0] < _SEARCH_TTL:
+            return list(hit[1])
+        results = await cls._search_uncached(query, limit, music)
+        if results:
+            _SEARCH_CACHE.pop(key, None)
+            _SEARCH_CACHE[key] = (time.time(), list(results))
+            _trim(_SEARCH_CACHE, _SEARCH_CACHE_MAX)
+        return results
+
+    @classmethod
+    async def _search_uncached(cls, query: str, limit: int = 10, music: Optional[bool] = None) -> list[dict]:
         # Fastest and cleanest: the warm InnerTube session in the local
         # resolver, searching YouTube Music songs (official audio, no video
         # intros) and falling back to regular video search there.
@@ -701,7 +755,61 @@ class YouTubeHandler:
         return None
 
     @classmethod
+    def invalidate_stream(cls, stream_url: Optional[str] = None, url: Optional[str] = None) -> None:
+        """Forget a cached stream (e.g. after a 403 when the WARP IP changed)."""
+        vid = _extract_video_id(url) if url else None
+        for key, (_, result) in list(_STREAM_CACHE.items()):
+            if key == vid or (stream_url and result and result[0] == stream_url):
+                _STREAM_CACHE.pop(key, None)
+
+    @classmethod
     async def extract_stream_url_async(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
+        """Cached, de-duplicated front for _extract_stream_url_uncached."""
+        vid = _extract_video_id(url) if YouTubeHandler.is_playable_youtube_url(url) else None
+        if not vid:
+            return await cls._extract_stream_url_uncached(url)
+        hit = _STREAM_CACHE.get(vid)
+        if hit and hit[0] > time.time():
+            logger.info("Stream cache hit for %s", vid)
+            return hit[1]
+        task = _INFLIGHT.get(vid)
+        if task is None:
+            # A prefetch for this video may already be running; share it
+            # instead of resolving the same track twice.
+            task = asyncio.ensure_future(cls._extract_stream_url_uncached(url))
+            _INFLIGHT[vid] = task
+            task.add_done_callback(lambda _t, v=vid: _INFLIGHT.pop(v, None))
+        result = await asyncio.shield(task)
+        if result and not result[2]:  # never cache live streams
+            _STREAM_CACHE.pop(vid, None)
+            _STREAM_CACHE[vid] = (_stream_expiry(result[0]), result)
+            _trim(_STREAM_CACHE, _STREAM_CACHE_MAX)
+        return result
+
+    @classmethod
+    async def prefetch(cls, song: Optional[dict] = None, query: Optional[str] = None, music: Optional[bool] = None) -> None:
+        """Resolve a track in the background so it starts instantly later."""
+        try:
+            if song is None and query:
+                if query.startswith(("http://", "https://")):
+                    url = query
+                else:
+                    results = await cls.search(query, limit=1, music=music)
+                    if not results:
+                        return
+                    url = results[0].get("url") or results[0].get("id")
+            else:
+                url = (song or {}).get("url") or (song or {}).get("id")
+            if url and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(url)):
+                url = f"https://www.youtube.com/watch?v={url}"
+            if url and cls.is_playable_youtube_url(url):
+                if await cls.extract_stream_url_async(url):
+                    logger.info("Prefetched next track: %s", url)
+        except Exception as e:
+            logger.debug("Prefetch failed: %r", e)
+
+    @classmethod
+    async def _extract_stream_url_uncached(cls, url: str) -> Optional[tuple[str, str, bool, int, Optional[dict]]]:
         """Resolve via the local youtubei.js resolver first, yt-dlp as fallback.
 
         Measured: the resolver answers in ~0.5s with a warm session, while a

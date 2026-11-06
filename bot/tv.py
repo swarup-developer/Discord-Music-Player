@@ -95,6 +95,11 @@ class IPTVManager:
     _health: Dict[str, Dict[str, Any]] = {}
     _is_loading: bool = False
     _loaded_at: float = 0.0
+    # Set by the music cog: returns True while any guild is playing audio.
+    # Probing thousands of streams (TLS handshakes) on the 2-core server while
+    # music plays starved the event loop and Discord marked the bot as not
+    # responding, so probes wait until playback stops.
+    is_busy = staticmethod(lambda: False)
 
     # ---------- health ----------
     @classmethod
@@ -163,7 +168,7 @@ class IPTVManager:
     @classmethod
     async def health_loop(cls) -> None:
         """Keep the channel list fresh and probe streams, India first."""
-        cls._load_health()
+        await asyncio.to_thread(cls._load_health)
         sem = asyncio.Semaphore(PROBE_CONCURRENCY)
         while True:
             try:
@@ -178,7 +183,10 @@ class IPTVManager:
                 async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                     async def run(ch):
                         async with sem:
+                            while cls.is_busy():
+                                await asyncio.sleep(30)
                             ok = await cls._probe(client, ch)
+                            await asyncio.sleep(0.2)  # keep CPU free for voice
                         cls._health[ch["url"]] = {"ok": ok, "t": time.time()}
                     for i in range(0, len(stale), 200):
                         await asyncio.gather(*(run(ch) for ch in stale[i:i + 200]))
@@ -285,14 +293,16 @@ class IPTVManager:
                 mtime = os.path.getmtime(CACHE_FILE)
                 if (time.time() - mtime) < CACHE_EXPIRY:
                     try:
-                        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            if data:
-                                cls._channels = data
-                                cls._loaded_at = mtime
-                                cls._rebuild_indices()
-                                logger.info(f"Loaded {len(cls._channels)} IPTV channels from local cache.")
-                                return
+                        def _read_cache():
+                            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                                return json.load(f)
+                        data = await asyncio.to_thread(_read_cache)
+                        if data:
+                            cls._channels = data
+                            cls._loaded_at = mtime
+                            await asyncio.to_thread(cls._rebuild_indices)
+                            logger.info(f"Loaded {len(cls._channels)} IPTV channels from local cache.")
+                            return
                     except Exception as e:
                         logger.error(f"Failed to read IPTV cache: {e}")
 
@@ -304,11 +314,11 @@ class IPTVManager:
                 
                 if response_lang.status_code == 200:
                     text_lang = response_lang.text
-                    cls._channels = cls._parse_m3u(text_lang, is_lang=True)
+                    cls._channels = await asyncio.to_thread(cls._parse_m3u, text_lang, True)
                     
                     if response_cat.status_code == 200:
                         text_cat = response_cat.text
-                        cat_channels = cls._parse_m3u(text_cat, is_lang=False)
+                        cat_channels = await asyncio.to_thread(cls._parse_m3u, text_cat, False)
                         
                         # Merge categories by URL
                         url_map = {ch["url"]: ch for ch in cls._channels}
@@ -321,7 +331,7 @@ class IPTVManager:
                     logger.info("Fetching Indian IPTV channels from iptv-org...")
                     response_in = await client.get("https://iptv-org.github.io/iptv/countries/in.m3u", timeout=15.0)
                     if response_in.status_code == 200:
-                        in_channels = cls._parse_m3u(response_in.text, is_lang=False)
+                        in_channels = await asyncio.to_thread(cls._parse_m3u, response_in.text, False)
                         # Take each channel's real language from the language
                         # index; every Indian channel used to be labelled Hindi.
                         lang_by_url = {ch["url"]: ch.get("language", "") for ch in cls._channels}
@@ -336,11 +346,13 @@ class IPTVManager:
                     logger.warning(f"Failed to fetch India IPTV playlist: {ie}")
                     
                 cls._loaded_at = time.time()
-                cls._rebuild_indices()
-                # Write to cache
+                await asyncio.to_thread(cls._rebuild_indices)
+                # Write to cache (off-loop: ~5MB of JSON blocked the event loop)
                 try:
-                    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                        json.dump(cls._channels, f, indent=4)
+                    def _write_cache(channels):
+                        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                            json.dump(channels, f)
+                    await asyncio.to_thread(_write_cache, list(cls._channels))
                     logger.info("Saved IPTV channels to local cache.")
                 except Exception as e:
                     logger.error(f"Failed to save IPTV cache: {e}")
