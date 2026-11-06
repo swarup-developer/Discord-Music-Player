@@ -42,11 +42,3 @@ stats.json
 
 # botctl.py saves your server details here
 botctl.json
-
-# Spotify: encrypted logins, encryption key, per-user player folders
-spotify_users.json
-spotify_secret.key
-spotify_sessions/
-
-# Spotify pairing helper output (contains a login)
-spotify-login.zip

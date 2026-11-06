@@ -43,15 +43,8 @@ class ControlCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         session = self.state.session_for(interaction.guild.id)
-        music_cog = interaction.client.get_cog("MusicCog")
-        spotify = music_cog._spotify(interaction.guild.id) if music_cog else None
-        if spotify:
-            vote = music_cog._skip_vote(interaction)
-            if vote:
-                return await interaction.response.send_message(vote)
-            await interaction.response.defer()
-            return await interaction.followup.send(await spotify.control(interaction.guild.id, "next"))
         if session.voice_client and session.voice_client.is_playing():
+            music_cog = interaction.client.get_cog("MusicCog")
             vote = music_cog._skip_vote(interaction) if music_cog else None
             if vote:
                 return await interaction.response.send_message(vote)
@@ -73,11 +66,6 @@ class ControlCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         session = self.state.session_for(interaction.guild.id)
-        music_cog = interaction.client.get_cog("MusicCog")
-        spotify = music_cog._spotify(interaction.guild.id) if music_cog else None
-        if spotify:
-            await interaction.response.defer()
-            return await interaction.followup.send(await spotify.control(interaction.guild.id, "pause"))
         if session.voice_client and session.voice_client.is_playing():
             session.voice_client.pause()
             import time
@@ -96,11 +84,6 @@ class ControlCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         session = self.state.session_for(interaction.guild.id)
-        music_cog = interaction.client.get_cog("MusicCog")
-        spotify = music_cog._spotify(interaction.guild.id) if music_cog else None
-        if spotify:
-            await interaction.response.defer()
-            return await interaction.followup.send(await spotify.control(interaction.guild.id, "resume"))
         if session.voice_client and session.voice_client.is_paused():
             session.voice_client.resume()
             import time

@@ -5,22 +5,6 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
-## [2026-11-06] - Real Spotify playback (Premium)
-
-### Added
-
-- Spotify provider: play straight from Spotify with your own Spotify Premium
-  account, through Spotify Soloist (Spotify's official player). Log in once
-  with `/spotify login` by pasting your Soloist key, choose **Spotify** in
-  `/provider`, and `/play` searches and plays from Spotify. No YouTube or
-  JioSaavn involved. Track, album and playlist links work, and the usual
-  pause, skip, previous, seek, stop and volume controls work with it.
-- `/spotify logout` removes your login. Keys are stored encrypted.
-
-### Changed
-
-- The Spotify provider no longer looks songs up on YouTube.
-
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 
 ### Added

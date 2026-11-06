@@ -59,26 +59,6 @@ else
   echo "--> Deno already installed ($(deno --version | head -n 1))"
 fi
 
-# 4b. Spotify Soloist (Spotify's official headless player) for the Spotify
-#     provider, plus PulseAudio so the bot can record its audio. Nothing runs
-#     until someone plays Spotify.
-echo "--> Installing Spotify Soloist and PulseAudio..."
-apt-get install -y pulseaudio pulseaudio-utils >/dev/null 2>&1 || true
-case "$(uname -m)" in
-  x86_64) SOLOIST_ARCH="x86_64" ;;
-  aarch64|arm64) SOLOIST_ARCH="arm64" ;;
-  armv7l) SOLOIST_ARCH="arm32" ;;
-  *) SOLOIST_ARCH="" ;;
-esac
-if [ -n "$SOLOIST_ARCH" ]; then
-  ( cd /tmp && curl --fail --location -so soloist.tar.gz \
-      "https://soloist-builds.spotifycdn.com/soloist_release_${SOLOIST_ARCH}.tar.gz" \
-    && tar -xzf soloist.tar.gz && install -m 755 soloist /usr/local/bin/soloist && rm -f soloist.tar.gz \
-    && echo "Installed $(soloist --version)" ) \
-    || echo "Warning: could not install Soloist; the Spotify provider will be unavailable."
-fi
-# Soloist builds expire after 90 days: re-run setup.sh (or this block) to update.
-
 # 5. Set up Proof-of-Origin Token (POT) server backend
 echo "--> Deploying POT Server (bgutil-ytdlp-pot-provider)..."
 cd "$USER_HOME"
