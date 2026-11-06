@@ -74,6 +74,17 @@ class SpotifyError(Exception):
     """A problem worth showing to the user as-is."""
 
 
+class AudioRefused(SpotifyError):
+    def __init__(self):
+        super().__init__(
+            "Spotify refused to send this account's audio to the bot, so nothing can play. "
+            "This is a block on Spotify's side that affects many accounts (mostly newer ones) "
+            "with every non-official Spotify player; the official Spotify app still works. "
+            "There's no fix on the bot's side. Pick another source with `/provider` "
+            "(YouTube Music is the default), or try a different (older) Spotify Premium account."
+        )
+
+
 class PremiumRequired(SpotifyError):
     def __init__(self):
         super().__init__(
@@ -355,6 +366,8 @@ class LibrespotSession:
         self._log_task: Optional[asyncio.Task] = None
         self._log_tail: list[str] = []
         self.on_event = None  # callback(session, type, data)
+        self.audio_refused = asyncio.Event()
+        self.started_playing = asyncio.Event()
 
     def _write_config(self):
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -372,6 +385,9 @@ class LibrespotSession:
             "initial_volume": 100,
             "external_volume": True,   # Discord-side volume; keep samples untouched
             "zeroconf_enabled": False,
+            # Don't keep "radio" playing on its own: when a song can't play
+            # it would try dozens of related songs in a row.
+            "disable_autoplay": True,
             "log_level": "info",
             "cache": {"enabled": False},
             # Spotify only streams audio to clients logged in through its own
@@ -459,6 +475,8 @@ class LibrespotSession:
             text = re.sub(r"(access_token|token)[\"'=: ]+\S+", r"\1=***", text, flags=re.I)
             self._log_tail.append(text)
             del self._log_tail[:-50]
+            if "refused the audio key" in text or "failed retrieving aes key" in text:
+                self.audio_refused.set()
             if "level=error" in text or "level=warn" in text:
                 logger.info("go-librespot[%s]: %s", self.user_id, text[:300])
 
@@ -482,6 +500,7 @@ class LibrespotSession:
                         elif etype == "playing":
                             self.paused = False
                             self.last_activity = time.time()
+                            self.started_playing.set()
                         if self.on_event:
                             with contextlib.suppress(Exception):
                                 self.on_event(self, etype, data)
@@ -498,9 +517,20 @@ class LibrespotSession:
             raise SpotifyError(f"The Spotify player refused that ({r.status_code}): {r.text[:120]}")
         return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
 
-    async def play(self, uri: str):
+    async def play(self, uri: str, wait: float = 10):
+        """Start playing and confirm Spotify really delivers audio."""
+        self.audio_refused.clear()
+        self.started_playing.clear()
         await self.call("/player/play", {"uri": uri, "paused": False})
         self.paused = False
+        refused = asyncio.create_task(self.audio_refused.wait())
+        playing = asyncio.create_task(self.started_playing.wait())
+        done, pending = await asyncio.wait({refused, playing}, timeout=wait,
+                                           return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if refused in done or self.audio_refused.is_set():
+            raise AudioRefused()
 
     async def stop(self):
         for task in (self._events_task, self._log_task):
@@ -563,7 +593,7 @@ class SessionManager:
             session = LibrespotSession(user_id, guild_id, self._free_port())
             await session.start(binary)
             self.by_guild[guild_id] = session
-            logger.info("Started Spotify player for guild %s on port %s", guild_id, port)
+            logger.info("Started Spotify player for guild %s on port %s", guild_id, session.port)
             return session
 
     def _free_port(self) -> int:

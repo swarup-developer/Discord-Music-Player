@@ -449,10 +449,17 @@ class SoloistManager:
         try:
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
                 total = 0
+                entries = []
                 for info in zf.infolist():
                     name = info.filename.replace("\\", "/")
                     parts = [p for p in name.split("/") if p not in ("", ".")]
-                    if not parts or ".." in parts or info.is_dir():
+                    if parts and ".." not in parts and not name.endswith("/"):
+                        entries.append((info, parts))
+                # Windows zips can list folders without a trailing slash; any
+                # entry that is the parent of another entry is a folder.
+                folders = {tuple(p[:i]) for _, p in entries for i in range(1, len(p))}
+                for info, parts in entries:
+                    if info.is_dir() or tuple(parts) in folders:
                         continue
                     if parts[0].lower() in ("cache", "crashpad") or parts[-1] in ("soloist.pid", "ws.addr", "ws.port"):
                         continue
