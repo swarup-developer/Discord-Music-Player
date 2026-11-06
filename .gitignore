@@ -42,3 +42,8 @@ stats.json
 
 # botctl.py saves your server details here
 botctl.json
+
+# Spotify: per-user logins and the prebuilt player
+spotify_sessions/
+bin/
+spotify-helper/target/

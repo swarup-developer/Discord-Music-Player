@@ -72,7 +72,9 @@ const inflight = new Map();
 // often cut off after the first ~1MB (HTTP 403 deeper in the file), while the
 // muxed itag 18 plays fully -- the same format yt-dlp ends up with, but ~20x
 // faster. IOS is last: its audio URLs hit the same 403 and it has no itag 18.
-const CLIENTS = ['YTMUSIC', 'MWEB', 'WEB', 'IOS'];
+// VISIONOS serves full audio-only files without a PO token (measured by
+// ttspotify-rs), so it goes first; the rest are fallbacks.
+const CLIENTS = ['VISIONOS', 'YTMUSIC', 'MWEB', 'WEB', 'IOS'];
 const FORMAT_TYPES = ['audio', 'video+audio'];
 
 /**

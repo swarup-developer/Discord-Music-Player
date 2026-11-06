@@ -15,6 +15,7 @@ A fast, self-hosted Discord music bot. It plays YouTube Music, JioSaavn, SoundCl
 - [Commands](#commands)
 - [Live TV and radio sources](#live-tv-and-radio-sources)
 - [Configuration](#configuration)
+- [Spotify (Premium)](#spotify-premium)
 - [How YouTube playback works](#how-youtube-playback-works)
 - [Troubleshooting](#troubleshooting)
 
@@ -193,6 +194,24 @@ All settings live in `.env`. See `.env.example` for the full list.
 | `COOKIE_REFRESH_HOURS` | `6` | Hours between automatic cookie refreshes |
 
 Python dependencies are listed in `requirements.txt` and `pyproject.toml`. Node.js dependencies for the resolver are in `ytjs/package.json`.
+
+## Spotify (Premium)
+
+Play straight from Spotify with your own Spotify Premium account:
+
+1. Run `/spotify login`. The bot sends a Spotify pairing link and code.
+2. Open the link on your phone or PC, log in to Spotify and press **Agree**.
+3. Choose **Spotify** in `/provider`. `/play` now searches and plays from
+   Spotify (songs, albums, playlists and Spotify links), and the usual pause,
+   skip, previous, seek, volume and stop controls work.
+
+`/spotify logout` removes your login. Spotify links from people who aren't
+logged in still play as before.
+
+Audio comes from `dcbot-spotify`, a small player in `spotify-helper/` built on
+[librespot](https://github.com/librespot-org/librespot). Build it with
+`cargo build --release` in that folder and copy
+`target/release/dcbot-spotify` to `bin/` in the bot folder.
 
 ## How YouTube playback works
 

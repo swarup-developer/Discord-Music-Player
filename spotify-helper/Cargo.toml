@@ -1,0 +1,25 @@
+[package]
+name = "dcbot-spotify"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Spotify player for the Discord music bot: pair-code login, search, and raw PCM out."
+
+[dependencies]
+librespot-core = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-metadata = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-std", "io-util"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+percent-encoding = "2"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"

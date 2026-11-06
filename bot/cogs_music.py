@@ -192,7 +192,7 @@ class ProviderSelectionView(discord.ui.View):
         ("ytmusic", "YouTube Music", "🎶"),
         ("jiosaavn", "JioSaavn", "🎵"),
         ("soundcloud", "SoundCloud", "🧡"),
-        ("spotify", "Spotify", "🟢"),
+        ("spotify", "Spotify (Premium)", "🟢"),
         ("local", "Local Files", "📁"),
     ]
 
@@ -213,6 +213,13 @@ class ProviderSelectionView(discord.ui.View):
 
     def _make_callback(self, key: str, label: str, icon: str):
         async def callback(interaction: discord.Interaction):
+            if key == "spotify":
+                spotify = interaction.client.get_cog("SpotifyCog")
+                if not spotify or not spotify.logged_in(interaction.user.id):
+                    return await interaction.response.send_message(
+                        "Log in first with `/spotify login` (Spotify Premium needed), then choose Spotify here.",
+                        ephemeral=True,
+                    )
             self.state.set_provider(self.guild_id, key)
             for item in self.children:
                 item.style = discord.ButtonStyle.success if item.custom_id == f"provider_{key}" else discord.ButtonStyle.secondary
@@ -322,6 +329,11 @@ class MusicCog(commands.Cog):
     def _session(self, guild_id: int):
         return self.state.session_for(guild_id)
 
+    def _spotify(self, guild_id: int):
+        """The Spotify cog when Spotify is what's playing in this server, else None."""
+        cog = self.bot.get_cog("SpotifyCog")
+        return cog if cog and cog.is_active(guild_id) else None
+
     class SearchResultButton(discord.ui.Button):
         def __init__(self, cog: "MusicCog", song: dict, label: str):
             super().__init__(label=label, style=discord.ButtonStyle.secondary)
@@ -405,6 +417,10 @@ class MusicCog(commands.Cog):
         async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.guild:
                 return await interaction.response.send_message("Server only.", ephemeral=True)
+            spotify = self.cog._spotify(interaction.guild.id)
+            if spotify:
+                await interaction.response.defer(ephemeral=True)
+                return await interaction.followup.send(await spotify.control(interaction.guild.id, "prev"), ephemeral=True)
             session = self.cog._session(interaction.guild.id)
             if not session.history:
                 return await interaction.response.send_message("No previous track available.", ephemeral=True)
@@ -425,6 +441,10 @@ class MusicCog(commands.Cog):
             if not vc or not vc.is_connected():
                 return await interaction.response.send_message("Nothing is connected.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
+            spotify = self.cog._spotify(self.guild_id)
+            if spotify:
+                await spotify.control(self.guild_id, "pause" if vc.is_playing() else "resume")
+                return await self.cog.refresh_controller(self.guild_id)
             if vc.is_playing():
                 vc.pause()
                 import time
@@ -467,6 +487,9 @@ class MusicCog(commands.Cog):
             if vote:
                 return await interaction.response.send_message(vote)
             await interaction.response.defer(ephemeral=True)
+            spotify = self.cog._spotify(interaction.guild.id)
+            if spotify:
+                return await interaction.followup.send(await spotify.control(interaction.guild.id, "next"), ephemeral=True)
             session.advance_queue_on_stop = True
             # Next always advances to the next queue item, even in repeat-one mode.
             session.skip_requested = True
@@ -629,7 +652,7 @@ class MusicCog(commands.Cog):
         
         title = session.current_song_title or "Nothing playing"
         status = "Playing" if session.is_playing else "Paused" if session.voice_client and session.voice_client.is_paused() else "Idle"
-        song = (session.current_song_data or {}).get("song") or {}
+        song = (session.current_song_data or {}).get("song") or getattr(session, "spotify_song", None) or {}
 
         lines = [f"## {title}"]
         if session.current_song_title:
@@ -979,6 +1002,7 @@ class MusicCog(commands.Cog):
         session.paused_duration = 0.0
         session.last_paused_at = None
         session.current_song_data = current_song_data
+        session.spotify_song = None
 
         after = self._make_after_playback(guild_id, session, generation, temp_file_path)
         # Log the audio processing actually in force: EQ and effects persist in
@@ -1501,6 +1525,12 @@ class MusicCog(commands.Cog):
         await self._start_playback(guild_id, audio_source, title, current_data, seek_start=elapsed)
 
     async def seek_relative(self, guild_id: int, offset_seconds: float, interaction: Optional[discord.Interaction] = None):
+        spotify = self._spotify(guild_id)
+        if spotify:
+            msg = await spotify.control(guild_id, "seek", offset_seconds)
+            if interaction:
+                await interaction.followup.send(msg, ephemeral=True)
+            return
         session = self._session(guild_id)
         if not session.current_song_data or not session.voice_client or not session.voice_client.is_connected():
             return
@@ -1606,7 +1636,17 @@ class MusicCog(commands.Cog):
         session = self._session(guild_id)
         queue = self.state.queue_for(guild_id)
         provider = self.state.get_provider(guild_id)
-        
+
+        # Spotify (Premium): search and play straight from Spotify, no YouTube.
+        # A Spotify link from someone who isn't logged in plays the usual way.
+        if provider == "spotify" or SpotifyHandler.is_spotify_url(query):
+            spotify = self.bot.get_cog("SpotifyCog")
+            if spotify:
+                await self._ensure_deferred(interaction)
+                handled = await spotify.play(interaction, query)
+                if handled is not False:
+                    return
+
         # Check Spotify first before other URL logic
         if SpotifyHandler.is_spotify_url(query):
             await self._ensure_deferred(interaction)
@@ -1832,7 +1872,11 @@ class MusicCog(commands.Cog):
         
         guild_id = interaction.guild.id
         session = self._session(guild_id)
-        
+
+        spotify = self.bot.get_cog("SpotifyCog")
+        if spotify and spotify.sessions.get(guild_id):
+            await spotify.control(guild_id, "stop")
+
         # Clear queue and the mood radio that would refill it
         self.state.clear_queue(guild_id)
         session.mood = None
@@ -1867,8 +1911,7 @@ class MusicCog(commands.Cog):
         elif provider == "local":
             results = await search_songs(query, "local", limit=10)
         elif provider == "spotify":
-            results = await search_songs(query, "spotify", limit=10)
-            fallback_msg = " (matched on YouTube Music)"
+            return await interaction.followup.send("With Spotify selected, use `/play <song>` to search and play from Spotify.")
         else:
             results = await search_songs(query, "jiosaavn", limit=10)
             
@@ -1880,7 +1923,7 @@ class MusicCog(commands.Cog):
             view=self.SearchResultsView(self, interaction, results),
         )
 
-    @discord.app_commands.command(name="provider", description="Set the default music provider (YouTube / JioSaavn / SoundCloud / Spotify / Local Files)")
+    @discord.app_commands.command(name="provider", description="Set the default music provider (YouTube Music / JioSaavn / SoundCloud / Spotify / Local Files)")
     async def provider_cmd(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("Server only.", ephemeral=True)

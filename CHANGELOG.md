@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases are named by date.
 
+## [2026-11-06] - Spotify Premium playback
+
+- Spotify provider: play straight from Spotify with your Spotify Premium
+  account. Log in once with `/spotify login` (a Spotify pairing code: open the
+  link, press Agree), choose **Spotify** in `/provider`, then `/play` songs,
+  albums, playlists or Spotify links. Pause, skip, previous, seek, volume and
+  stop work as usual. `/spotify logout` removes your login.
+- YouTube: tries one more fast audio-only source first.
+
 ## [2026-11-06] - Faster YouTube, smoother queue, lighter bot
 
 ### Added
