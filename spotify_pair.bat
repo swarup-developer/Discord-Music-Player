@@ -28,7 +28,11 @@ set "KEY="
 set /p "KEY=Paste your Spotify key (starts with spak_) and press Enter: "
 if not defined KEY goto :eof
 
-rem ---- 3. Pair on this network --------------------------------------------
+rem ---- 3. Pair on this network (skipped if a pairing is already saved) ----
+if exist "%WORK%\pair-data\paired.ok" (
+    echo Using the Spotify pairing saved on this computer.
+    goto :send
+)
 if exist "%WORK%\pair-data" rmdir /s /q "%WORK%\pair-data"
 echo.
 echo Now open Spotify on this computer, or on your phone on the same Wi-Fi.
@@ -42,8 +46,16 @@ if errorlevel 1 (
     goto :eof
 )
 echo Spotify connected.
+echo ok> "%WORK%\pair-data\paired.ok"
+:send
 if exist "%ZIP%" del "%ZIP%"
-powershell -NoProfile -Command "Compress-Archive -Force '%WORK%\pair-data\*' '%ZIP%'"
+timeout /t 2 >nul
+powershell -NoProfile -Command "Get-ChildItem '%WORK%\pair-data' | Where-Object { $_.Name -notin 'crashpad','cache','soloist.pid','ws.port','ws.addr' } | Compress-Archive -Force -DestinationPath '%ZIP%'"
+if not exist "%ZIP%" (
+    echo Could not save the Spotify login. Run this again.
+    timeout /t 20 >nul
+    goto :eof
+)
 
 rem ---- 4. Send it to the bot (bot owner: uses botctl.json) ----------------
 if not exist "botctl.json" goto :manual
@@ -62,7 +74,8 @@ if errorlevel 1 goto :manual
 echo %KEY%| ssh -i "%SSHKEY%" -o BatchMode=yes "%USR%@%SRV%" "cd '%BOTDIR%' && .venv/bin/python -m bot.spotify_admin import %DUID% /tmp/spotify-login-%DUID%.zip; rm -f /tmp/spotify-login-%DUID%.zip"
 if errorlevel 1 (
     echo.
-    echo The bot could not use this login. Run this again.
+    echo The bot could not use this login. The reason is shown above.
+    echo Your pairing is kept, so running this again only re-sends it.
     timeout /t 30 >nul
     goto :eof
 )

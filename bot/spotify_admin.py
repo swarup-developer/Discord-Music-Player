@@ -7,6 +7,7 @@ the paired login works on this server, and saves it for that Discord user, so
 they can pick Spotify in /provider right away.
 """
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -21,11 +22,19 @@ async def _import(user_id: int, zip_path: Path, key: str) -> int:
     except SpotifyError as e:
         print(f"FAILED: {e}")
         return 1
+    except Exception as e:  # keep the details for the bot owner, show one line
+        import traceback
+        log = Path(__file__).resolve().parent.parent / "spotify_admin.log"
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(traceback.format_exc() + "\n")
+        print(f"FAILED: {type(e).__name__}: {e} (details in spotify_admin.log on the server)")
+        return 1
     print("OK: Spotify is connected for this Discord account.")
     return 0
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     if len(sys.argv) != 4 or sys.argv[1] != "import" or not sys.argv[2].isdigit():
         print(__doc__)
         return 2
