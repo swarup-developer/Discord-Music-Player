@@ -98,7 +98,7 @@ class GuildPlayer:
             self.proc = await asyncio.create_subprocess_exec(
                 binary, "serve", str(user_dir(self.user_id)),
                 stdin=asyncio.subprocess.PIPE, stdout=w_fd, stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "RUST_LOG": "warn"}, limit=1 << 20,
+                env={**os.environ, "RUST_LOG": "warn,symphonia_bundle_mp3=off,symphonia_core=off"}, limit=1 << 20,
             )
         finally:
             os.close(w_fd)
@@ -541,7 +541,7 @@ class SpotifyCog(commands.Cog):
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary, "pair", str(tmp), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "RUST_LOG": "warn"},
+                env={**os.environ, "RUST_LOG": "warn,symphonia_bundle_mp3=off,symphonia_core=off"},
             )
             result, error = None, ""
             deadline = time.time() + 900
